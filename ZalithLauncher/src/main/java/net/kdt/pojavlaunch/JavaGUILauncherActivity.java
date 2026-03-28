@@ -187,9 +187,9 @@ public class JavaGUILauncherActivity extends BaseActivity implements View.OnTouc
             }else if(resourceUri != null) {
                 AlertDialog dialog = ZHTools.showTaskRunningDialog(this, getString(R.string.multirt_progress_caching));
                 Task.runTask(() -> {
-                    startModInstallerWithUri(resourceUri, jreName);
-                    return null;
-                }).ended(TaskExecutors.getAndroidUI(), r -> dialog.dismiss())
+                            startModInstallerWithUri(resourceUri, jreName);
+                            return null;
+                        }).ended(TaskExecutors.getAndroidUI(), r -> dialog.dismiss())
                         .execute();
             }
         } catch (Throwable th) {
@@ -365,12 +365,12 @@ public class JavaGUILauncherActivity extends BaseActivity implements View.OnTouc
             default:
                 return false;
         }
-        
+
         switch (v.getId()) {
             case R.id.installmod_mouse_pri:
                 AWTInputBridge.sendMousePress(AWTInputEvent.BUTTON1_DOWN_MASK, isDown);
                 break;
-                
+
             case R.id.installmod_mouse_sec:
                 AWTInputBridge.sendMousePress(AWTInputEvent.BUTTON3_DOWN_MASK, isDown);
                 break;
@@ -406,7 +406,7 @@ public class JavaGUILauncherActivity extends BaseActivity implements View.OnTouc
         AWTInputBridge.sendMousePos(
                 (int) MathUtils.map(x, binding.textureView.getX(), binding.textureView.getX() + binding.textureView.getWidth(), 0, AWTCanvasView.AWT_CANVAS_WIDTH),
                 (int) MathUtils.map(y, binding.textureView.getY(), binding.textureView.getY() + binding.textureView.getHeight(), 0, AWTCanvasView.AWT_CANVAS_HEIGHT)
-                );
+        );
     }
 
     public void forceClose(View v) {
@@ -441,8 +441,10 @@ public class JavaGUILauncherActivity extends BaseActivity implements View.OnTouc
                 javaArgList.add("-jar");
                 javaArgList.add(modFile.getAbsolutePath());
             }
-            
-            if (AllSettings.getJavaSandbox().getValue()) {
+
+            boolean disableSecurityManager = getIntent().getBooleanExtra("disableSecurityManager", false);
+
+            if (AllSettings.getJavaSandbox().getValue() && !disableSecurityManager) {
                 Collections.reverse(javaArgList);
                 javaArgList.add("-Xbootclasspath/a:" + LibPath.PRO_GRADE.getAbsolutePath());
                 javaArgList.add("-Djava.security.manager=net.sourceforge.prograde.sm.ProGradeJSM");

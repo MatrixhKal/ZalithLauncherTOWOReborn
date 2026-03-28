@@ -14,18 +14,32 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
 
-class InstallArgsUtils(private val mcVersion: String, private val loaderVersion: String) {
+class InstallArgsUtils(
+    private val mcVersion: String,
+    private val loaderVersion: String
+) {
     fun setFabric(intent: Intent, jarFile: File, customName: String) {
-        val args = "-DprofileName=\"$customName\" -javaagent:${LibPath.MIO_FABRIC_AGENT.absolutePath}" +
-                " -jar ${jarFile.absolutePath} client -mcversion \"$mcVersion\" -loader \"$loaderVersion\" -dir \"${ProfilePathHome.getGameHome()}\""
+        val args = buildString {
+            append("-DprofileName=\"$customName\" ")
+            append("-javaagent:${LibPath.MIO_FABRIC_AGENT.absolutePath} ")
+            append("-jar ${jarFile.absolutePath} client ")
+            append("-mcversion \"$mcVersion\" ")
+            append("-loader \"$loaderVersion\" ")
+            append("-dir \"${ProfilePathHome.getGameHome()}\"")
+        }
+
         intent.putExtra("javaArgs", args)
         intent.putExtra(JavaGUILauncherActivity.SUBSCRIBE_JVM_EXIT_EVENT, true)
         intent.putExtra(JavaGUILauncherActivity.FORCE_SHOW_LOG, true)
     }
 
-    @Deprecated("不支持JRE 8进行安装，更高的JRE环境安装时，不会自动退出，因此暂时不使用这个函数进行配置安装")
+    @Deprecated(
+        message = "JRE 8 is not supported for installation. On newer JRE versions, the installer does not exit automatically, so this method is currently not used."
+    )
     fun setQuilt(intent: Intent, jarFile: File) {
-        val args = "-jar ${jarFile.absolutePath} install client \"$mcVersion\" \"$loaderVersion\" --install-dir=\"${ProfilePathHome.getGameHome()}\""
+        val args =
+            "-jar ${jarFile.absolutePath} install client \"$mcVersion\" \"$loaderVersion\" --install-dir=\"${ProfilePathHome.getGameHome()}\""
+
         intent.putExtra("javaArgs", args)
         intent.putExtra(JavaGUILauncherActivity.SUBSCRIBE_JVM_EXIT_EVENT, true)
         intent.putExtra(JavaGUILauncherActivity.FORCE_SHOW_LOG, true)
@@ -35,7 +49,9 @@ class InstallArgsUtils(private val mcVersion: String, private val loaderVersion:
     fun setForge(intent: Intent, jarFile: File, customName: String) {
         forgeLikeCustomVersionName(jarFile, customName)
 
-        val args = "-javaagent:${LibPath.FORGE_INSTALLER.absolutePath}=\"$loaderVersion\" -jar ${jarFile.absolutePath}"
+        val args =
+            "-javaagent:${LibPath.FORGE_INSTALLER.absolutePath}=\"$loaderVersion\" -jar ${jarFile.absolutePath}"
+
         intent.putExtra("javaArgs", args)
     }
 
@@ -44,31 +60,38 @@ class InstallArgsUtils(private val mcVersion: String, private val loaderVersion:
         forgeLikeCustomVersionName(jarFile, customName)
 
         val args = "-jar ${jarFile.absolutePath} --installClient \"${ProfilePathHome.getGameHome()}\""
+
         intent.putExtra("javaArgs", args)
         intent.putExtra(JavaGUILauncherActivity.SUBSCRIBE_JVM_EXIT_EVENT, true)
         intent.putExtra(JavaGUILauncherActivity.FORCE_SHOW_LOG, true)
+        intent.putExtra("disableSecurityManager", true)
     }
 
     fun setOptiFine(intent: Intent, jarFile: File, customName: String) {
-        val args = "-javaagent:${LibPath.FORGE_INSTALLER.absolutePath}=OFNPS " +
-                "-javaagent:${LibPath.OPTIFINE_RENAMER.absolutePath}=\"$customName\" " +
-                "-jar ${jarFile.absolutePath}"
+        val args =
+            "-javaagent:${LibPath.FORGE_INSTALLER.absolutePath}=OFNPS " +
+                    "-javaagent:${LibPath.OPTIFINE_RENAMER.absolutePath}=\"$customName\" " +
+                    "-jar ${jarFile.absolutePath}"
+
         intent.putExtra("javaArgs", args)
     }
 
     /**
-     * 将Forge或NeoForge安装器中的install_profile.json 文件中的 version 的键，修改为 customName
-     * Forge安装器会根据 version 这个值，来生成对应的版本文件夹
-     * 这样做是为了自定义版本 json 的安装位置
+     * Updates the "version" key in the installer’s install_profile.json file
+     * for Forge or NeoForge so the generated version folder uses customName.
      */
     @Throws(Throwable::class)
     private fun forgeLikeCustomVersionName(jarFile: File, customName: String) {
         val tempJarFile = File(jarFile.parentFile, "${jarFile.nameWithoutExtension}_temp.jar")
         val profileJson = File(jarFile.parentFile, "install_profile.json")
+
         try {
             updateProgress(0)
 
-            if (tempJarFile.exists()) tempJarFile.delete()
+            if (tempJarFile.exists()) {
+                tempJarFile.delete()
+            }
+
             extractInstallProfile(jarFile, profileJson)
             updateProgress(50)
 
@@ -76,8 +99,14 @@ class InstallArgsUtils(private val mcVersion: String, private val loaderVersion:
             writeTempJarFile(jarFile, tempJarFile, profileJson)
             updateProgress(100)
 
-            if (!jarFile.delete()) throw IOException("Failed to delete original Installer file!")
-            if (!tempJarFile.renameTo(jarFile)) throw IOException("Failed to rename temp Installer file to original!")
+            if (!jarFile.delete()) {
+                throw IOException("Failed to delete original installer file.")
+            }
+
+            if (!tempJarFile.renameTo(jarFile)) {
+                throw IOException("Failed to rename temp installer file to original.")
+            }
+
             profileJson.delete()
         } catch (e: Exception) {
             throw RuntimeException(e)
@@ -87,17 +116,22 @@ class InstallArgsUtils(private val mcVersion: String, private val loaderVersion:
     }
 
     private fun updateProgress(progress: Int) {
-        ProgressKeeper.submitProgress(ProgressLayout.INSTALL_RESOURCE, progress, R.string.mod_forge_custom_version)
+        ProgressKeeper.submitProgress(
+            ProgressLayout.INSTALL_RESOURCE,
+            progress,
+            R.string.mod_forge_custom_version
+        )
     }
 
     /**
-     * 解压出install_profile.json
+     * Extracts install_profile.json from the installer archive.
      */
     @Throws(Throwable::class)
     private fun extractInstallProfile(jarFile: File, profileJson: File) {
         val zipFile = ZipFile(jarFile)
         val entry = zipFile.getEntry("install_profile.json")
-            ?: throw IOException("File \"install_profile.json\" not found in the Installer")
+            ?: throw IOException("File \"install_profile.json\" not found in the installer.")
+
         profileJson.outputStream().use { outputStream ->
             zipFile.getInputStream(entry).use { inputStream ->
                 inputStream.copyTo(outputStream)
@@ -106,44 +140,62 @@ class InstallArgsUtils(private val mcVersion: String, private val loaderVersion:
     }
 
     /**
-     * 通过修改install_profile.json文件中的值，来实现自定义版本名称的效果
+     * Modifies install_profile.json so the installer uses a custom version name.
      */
     @Throws(Throwable::class)
     private fun modifyJsonFile(profileJson: File, customName: String) {
         val jsonObject = JsonParser.parseString(profileJson.readText()).asJsonObject
-        //通过检查是否有spec这个键，来判断是否为新版本的Installer
-        if (jsonObject.has("spec")) { //新版安装器
-            if (!jsonObject.has("version")) throw IOException("Unable to find version key!")
-            //install_profile.json中，把version这个值改为customName，也就完成自定义版本名的效果
+
+        // Check whether the "spec" key exists to determine if this is a newer installer.
+        if (jsonObject.has("spec")) {
+            if (!jsonObject.has("version")) {
+                throw IOException("Unable to find version key.")
+            }
+
+            // For newer installers, update "version" to customName.
             jsonObject.addProperty("version", customName)
-        } else { //旧版安装器
-            if (!jsonObject.has("install")) throw IOException("Unable to find install key!")
+        } else {
+            if (!jsonObject.has("install")) {
+                throw IOException("Unable to find install key.")
+            }
+
             val install = jsonObject.get("install").asJsonObject
-            if (!install.has("target")) throw IOException("Unable to find install-target key!")
-            //把target这个值改为customName，也就完成旧版自定义版本名的效果
+            if (!install.has("target")) {
+                throw IOException("Unable to find install-target key.")
+            }
+
+            // For older installers, update "target" to customName.
             install.addProperty("target", customName)
             jsonObject.add("install", install)
         }
+
         profileJson.writeText(jsonObject.toString())
     }
 
     @Throws(Throwable::class)
     private fun writeTempJarFile(jarFile: File, tempJarFile: File, profileJson: File) {
-        //仅跳过META-INF中后缀为.SF或.RSA的文件，避免验证的时候发现install_profile.json被修改
-        fun needSkip(entryName: String) = entryName.startsWith("META-INF/") && (entryName.endsWith(".SF") || entryName.endsWith(".RSA"))
+        // Skip only .SF and .RSA files in META-INF to avoid signature verification issues
+        // after install_profile.json is modified.
+        fun shouldSkip(entryName: String): Boolean {
+            return entryName.startsWith("META-INF/") &&
+                    (entryName.endsWith(".SF") || entryName.endsWith(".RSA"))
+        }
 
         ZipFile(jarFile).use { zipFile ->
             ZipOutputStream(tempJarFile.outputStream()).use { zos ->
                 zipFile.entries().asSequence().forEach { originalEntry ->
                     zos.putNextEntry(ZipEntry(originalEntry.name))
+
                     if (originalEntry.name == "install_profile.json") {
-                        profileJson.inputStream().use { fis -> fis.copyTo(zos) }
-                    } else {
-                        if (!originalEntry.isDirectory && !needSkip(originalEntry.name)) {
-                            //写入原始文件
-                            zipFile.getInputStream(originalEntry).use { it.copyTo(zos) }
+                        profileJson.inputStream().use { input ->
+                            input.copyTo(zos)
+                        }
+                    } else if (!originalEntry.isDirectory && !shouldSkip(originalEntry.name)) {
+                        zipFile.getInputStream(originalEntry).use { input ->
+                            input.copyTo(zos)
                         }
                     }
+
                     zos.closeEntry()
                 }
             }
