@@ -131,54 +131,6 @@ class LaunchArgs(
 
         return argsList
     }
-
-    /*private fun getMinecraftJVMArgs(lwjglComponent: String): Array<String> {
-        val resolvedVersionInfo = Tools.getVersionInfo(minecraftVersion, true)
-
-        val varArgMap: MutableMap<String, String?> = android.util.ArrayMap()
-        varArgMap["classpath_separator"] = ":"
-        varArgMap["library_directory"] = getLibrariesHome()
-        varArgMap["version_name"] = resolvedVersionInfo.id
-        varArgMap["natives_directory"] = buildLibraryPath(lwjglComponent)
-
-        val minecraftArgs: MutableList<String> = ArrayList()
-        resolvedVersionInfo.arguments?.let {
-            it.jvm?.forEach { arg ->
-                processJvmArg(arg, lwjglComponent)?.let(minecraftArgs::add)
-            }
-        }
-        return JSONUtils.insertJSONValueList(minecraftArgs.toTypedArray(), varArgMap)
-    }
-
-    private fun processJvmArg(arg: Any, lwjglComponent: String): String? = (arg as? String)?.let { argument ->
-        when {
-            argument.startsWith("-Djava.library.path=") -> {
-                "-Djava.library.path=\${natives_directory}"
-            }
-
-            argument.startsWith("-Dorg.lwjgl.librarypath=") ||
-                    argument.startsWith("-Djna.boot.library.path=") -> {
-                null
-            }
-
-            argument.startsWith("-DignoreList=") -> {
-                "$argument,$versionFileName.jar"
-            }
-
-            argument.startsWith("-Djna.tmpdir=") ||
-                    argument.startsWith("-Dorg.lwjgl.system.SharedLibraryExtractPath=") ||
-                    argument.startsWith("-Dio.netty.native.workdir=") -> {
-                val key = argument.substringBefore("=")
-                "$key=${PathManager.DIR_CACHE.absolutePath}"
-            }
-
-            argument.contains("\${natives_directory}") -> {
-                argument.replace("\${natives_directory}", buildLibraryPath(lwjglComponent))
-            }
-
-            else -> argument
-        }
-    }*/
     private fun getMinecraftJVMArgs(lwjglComponent: String): Array<String> {
         val resolvedVersionInfo = Tools.getVersionInfo(minecraftVersion, true)
 

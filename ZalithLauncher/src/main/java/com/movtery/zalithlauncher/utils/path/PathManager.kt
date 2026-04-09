@@ -48,7 +48,6 @@ class PathManager {
             DIR_MULTIRT_HOME = "$DIR_DATA/runtimes"
 
             // Keep launcher-managed support files in the app-scoped launcher home.
-            // Do not tie this to shared storage root detection used by the file picker.
             DIR_GAME_HOME = getLauncherHome(context).absolutePath
 
             DIR_LAUNCHER_LOG = "$DIR_GAME_HOME/launcher_log"
@@ -94,10 +93,10 @@ class PathManager {
         }
 
         /**
-         * For file manager browsing and custom profile path selection only.
-         * Example results:
-         * - /storage/emulated/0
-         * - /storage/XXXX-XXXX
+         * Returns all visible shared storage roots, including removable storage when available.
+         * This keeps the existing app-external-dir based discovery, but also adds a
+         * direct /storage scan fallback for USB/OTG drives that some Android 10 devices
+         * do not expose through getExternalFilesDirs().
          */
         @JvmStatic
         fun getStorageRoots(context: Context): List<File> {
@@ -106,14 +105,20 @@ class PathManager {
 
             appExternalDirs.forEach { dir ->
                 val root = getStorageRootFromAppExternalDir(dir) ?: return@forEach
-                if (root.exists() && roots.none { it.absolutePath == root.absolutePath }) {
+                if (root.exists() && root.canRead() && roots.none { it.absolutePath == root.absolutePath }) {
+                    roots.add(root)
+                }
+            }
+
+            getDirectMountedStorageRoots().forEach { root ->
+                if (root.exists() && root.canRead() && roots.none { it.absolutePath == root.absolutePath }) {
                     roots.add(root)
                 }
             }
 
             if (roots.isEmpty()) {
                 val fallback = Environment.getExternalStorageDirectory()
-                if (fallback.exists()) {
+                if (fallback.exists() && fallback.canRead()) {
                     roots.add(fallback)
                 }
             }
@@ -123,7 +128,11 @@ class PathManager {
 
         @JvmStatic
         fun getPrimaryStorageRoot(context: Context): File {
-            return getStorageRoots(context).firstOrNull()
+            val emulated = getStorageRoots(context).firstOrNull {
+                it.absolutePath == Environment.getExternalStorageDirectory().absolutePath
+            }
+            return emulated
+                ?: getStorageRoots(context).firstOrNull()
                 ?: Environment.getExternalStorageDirectory()
         }
 
@@ -136,12 +145,22 @@ class PathManager {
                 if (!Environment.isExternalStorageRemovable(dir)) return@forEach
 
                 val root = getStorageRootFromAppExternalDir(dir) ?: return@forEach
-                if (root.exists()) {
+                if (root.exists() && root.canRead()) {
                     return root
                 }
             }
 
-            return null
+            return getDirectMountedStorageRoots().firstOrNull()
+        }
+
+        @JvmStatic
+        fun getUsbOrExternalRoots(context: Context): List<File> {
+            val primaryPath = getPrimaryStorageRoot(context).absolutePath
+            val removablePath = getRemovableStorageRoot(context)?.absolutePath
+
+            return getStorageRoots(context).filter { root ->
+                root.absolutePath != primaryPath && root.absolutePath != removablePath
+            }
         }
 
         @JvmStatic
@@ -179,6 +198,38 @@ class PathManager {
             if (index <= 0) return null
 
             return File(path.substring(0, index))
+        }
+
+        private fun getDirectMountedStorageRoots(): List<File> {
+            val results = mutableListOf<File>()
+            val storageDir = File("/storage")
+            val blockedNames = setOf("emulated", "self")
+
+            val children = storageDir.listFiles() ?: return emptyList()
+
+            for (child in children) {
+                if (!child.isDirectory) continue
+                if (child.name in blockedNames) continue
+                if (!child.canRead()) continue
+
+                val lowerName = child.name.lowercase()
+
+                val looksLikeRemovable =
+                    child.name.contains("-") ||
+                            lowerName.startsWith("usb") ||
+                            lowerName.startsWith("usbotg") ||
+                            lowerName.startsWith("sd") ||
+                            lowerName.startsWith("ext") ||
+                            lowerName.startsWith("disk")
+
+                if (!looksLikeRemovable) continue
+
+                if (results.none { it.absolutePath == child.absolutePath }) {
+                    results.add(child)
+                }
+            }
+
+            return results
         }
     }
 }

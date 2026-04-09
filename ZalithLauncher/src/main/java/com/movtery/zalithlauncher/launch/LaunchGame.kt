@@ -302,6 +302,13 @@ object LaunchGame {
         val versionInfo = Tools.getVersionInfo(minecraftVersion)
         val gameDirPath = minecraftVersion.getGameDir()
 
+
+        GraphicsBackendHelper.applyPreferredBackendIfNeeded(
+            context = activity,
+            minecraftVersion = minecraftVersion,
+            gameDir = gameDirPath
+        )
+
         Tools.disableSplash(gameDirPath)
         val launchClassPath = Tools.generateLaunchClassPath(versionInfo, minecraftVersion)
 
