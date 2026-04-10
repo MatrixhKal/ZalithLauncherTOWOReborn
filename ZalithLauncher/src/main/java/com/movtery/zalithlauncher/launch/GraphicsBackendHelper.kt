@@ -2,7 +2,6 @@ package com.movtery.zalithlauncher.launch
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.os.Build
 import net.kdt.pojavlaunch.Logger
 import com.movtery.zalithlauncher.feature.version.Version
 import java.io.File
@@ -11,21 +10,54 @@ object GraphicsBackendHelper {
     private const val PREFS_NAME = "graphics_backend_prefs"
     private const val KEY_FORCE_OPENGL_PREFIX = "force_opengl_"
 
+    private const val VULKAN_OK = 0
+    private const val VULKAN_MISSING_PUSH_DESCRIPTOR = 1
+    private const val VULKAN_MISSING_FILLMODE_NON_SOLID = 2
+    private const val VULKAN_NO_DEVICE = 3
+    private const val VULKAN_INSTANCE_FAILED = 4
+    private const val VULKAN_DEVICE_ENUM_FAILED = 5
+    private const val VULKAN_UNKNOWN_ERROR = 100
+
     private fun prefs(context: Context): SharedPreferences {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
 
-    private fun forceKey(versionName: String, gameDir: File): String {
-        return KEY_FORCE_OPENGL_PREFIX + versionName + "_" + gameDir.absolutePath.hashCode()
+    /**
+     * Keep this key broad enough that changing the isolated path does not lose the cached result.
+     * The Vulkan capability is a device/driver property, not a per-folder property.
+     */
+    private fun forceKey(versionName: String): String {
+        return KEY_FORCE_OPENGL_PREFIX + versionName
     }
 
     fun markVulkanFailed(context: Context, versionName: String, gameDir: File) {
-        prefs(context).edit().putBoolean(forceKey(versionName, gameDir), true).apply()
+        prefs(context).edit().putBoolean(forceKey(versionName), true).apply()
+        Logger.appendToLog("GraphicsBackend: cached Vulkan failure for $versionName at ${gameDir.absolutePath}")
     }
 
     fun clearVulkanFailed(context: Context, versionName: String, gameDir: File) {
-        prefs(context).edit().remove(forceKey(versionName, gameDir)).apply()
+        prefs(context).edit().remove(forceKey(versionName)).apply()
+        Logger.appendToLog("GraphicsBackend: cleared cached Vulkan failure for $versionName at ${gameDir.absolutePath}")
     }
+
+    /**
+     * Native probe must check at minimum:
+     * - Vulkan loader / instance creation
+     * - physical device availability
+     * - VK_KHR_push_descriptor
+     * - fillModeNonSolid
+     *
+     * Return one of the constants above.
+     */
+    @JvmStatic
+    private external fun nativeProbeMinecraft26Vulkan(): Int
+
+    /**
+     * Optional native detail string for logging, e.g.
+     * "Missing VK_KHR_push_descriptor on Mali-G615 MC2"
+     */
+    @JvmStatic
+    private external fun nativeGetMinecraft26VulkanProbeMessage(): String?
 
     fun shouldForceOpenGL(
         context: Context,
@@ -33,12 +65,81 @@ object GraphicsBackendHelper {
         gameDir: File
     ): Boolean {
         val versionName = minecraftVersion.getVersionName()
-        if (!is26_2OrNewer(versionName)) return false
+        if (!is26_2OrNewer(versionName)) {
+            Logger.appendToLog("GraphicsBackend: $versionName is below 26.2, no OpenGL force needed")
+            return false
+        }
 
-        val savedFailure = prefs(context).getBoolean(forceKey(versionName, gameDir), false)
-        if (savedFailure) return true
+        val sharedPrefs = prefs(context)
+        val savedFailure = sharedPrefs.getBoolean(forceKey(versionName), false)
+        if (savedFailure) {
+            Logger.appendToLog("GraphicsBackend: cached Vulkan failure found for $versionName, forcing OpenGL")
+            return true
+        }
 
-        return isKnownBadDevice()
+        val probeResult = runCatching { nativeProbeMinecraft26Vulkan() }
+            .onFailure {
+                Logger.appendToLog("GraphicsBackend: Vulkan probe crashed/failed: ${it.message}")
+            }
+            .getOrDefault(VULKAN_UNKNOWN_ERROR)
+
+        val probeMessage = runCatching { nativeGetMinecraft26VulkanProbeMessage() }.getOrNull()
+
+        when (probeResult) {
+            VULKAN_OK -> {
+                Logger.appendToLog(
+                    "GraphicsBackend: Vulkan probe passed for $versionName" +
+                            (probeMessage?.let { " ($it)" } ?: "")
+                )
+                clearVulkanFailed(context, versionName, gameDir)
+                return false
+            }
+
+            VULKAN_MISSING_PUSH_DESCRIPTOR -> {
+                Logger.appendToLog(
+                    "GraphicsBackend: Vulkan probe failed for $versionName - missing VK_KHR_push_descriptor" +
+                            (probeMessage?.let { " ($it)" } ?: "")
+                )
+            }
+
+            VULKAN_MISSING_FILLMODE_NON_SOLID -> {
+                Logger.appendToLog(
+                    "GraphicsBackend: Vulkan probe failed for $versionName - missing fillModeNonSolid" +
+                            (probeMessage?.let { " ($it)" } ?: "")
+                )
+            }
+
+            VULKAN_NO_DEVICE -> {
+                Logger.appendToLog(
+                    "GraphicsBackend: Vulkan probe failed for $versionName - no usable Vulkan device" +
+                            (probeMessage?.let { " ($it)" } ?: "")
+                )
+            }
+
+            VULKAN_INSTANCE_FAILED -> {
+                Logger.appendToLog(
+                    "GraphicsBackend: Vulkan probe failed for $versionName - could not create Vulkan instance" +
+                            (probeMessage?.let { " ($it)" } ?: "")
+                )
+            }
+
+            VULKAN_DEVICE_ENUM_FAILED -> {
+                Logger.appendToLog(
+                    "GraphicsBackend: Vulkan probe failed for $versionName - physical device enumeration failed" +
+                            (probeMessage?.let { " ($it)" } ?: "")
+                )
+            }
+
+            else -> {
+                Logger.appendToLog(
+                    "GraphicsBackend: Vulkan probe failed for $versionName - unknown error code $probeResult" +
+                            (probeMessage?.let { " ($it)" } ?: "")
+                )
+            }
+        }
+
+        markVulkanFailed(context, versionName, gameDir)
+        return true
     }
 
     fun applyPreferredBackendIfNeeded(
@@ -98,21 +199,16 @@ object GraphicsBackendHelper {
         runCatching {
             optionsFile.writeText(updated)
         }.onSuccess {
-            val backendLineAfter = updated.lineSequence()
+            val backendLineAfter = runCatching { optionsFile.readText() }
+                .getOrDefault(updated)
+                .lineSequence()
                 .firstOrNull { it.startsWith("preferredGraphicsBackend:") }
+
             Logger.appendToLog("GraphicsBackend: after patch = ${backendLineAfter ?: "<missing>"}")
             Logger.appendToLog("GraphicsBackend: options.txt patched successfully")
         }.onFailure { e ->
             Logger.appendToLog("GraphicsBackend: failed to patch options.txt: ${e.message}")
         }
-    }
-
-    private fun isKnownBadDevice(): Boolean {
-        val manufacturer = Build.MANUFACTURER.orEmpty()
-        val model = Build.MODEL.orEmpty()
-        val device = "$manufacturer $model"
-
-        return device.contains("Anbernic RG557", ignoreCase = true)
     }
 
     private fun is26_2OrNewer(versionName: String): Boolean {
