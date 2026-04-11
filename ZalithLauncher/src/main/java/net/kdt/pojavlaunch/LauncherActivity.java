@@ -686,14 +686,15 @@ public class LauncherActivity extends BaseActivity {
     }
 
     private void continueLaunchIfModernRendererReady(Version version) {
-        /*PluginLoader.refreshAllPlugins(this);
+        // This checks if the user has a compatible renderer installed for specific versions
+        PluginLoader.refreshAllPlugins(this);
         Renderers.reloadRenderers(this, version.getRenderer(), false);
 
         if (!checkModernRendererRequirement(version)) {
             return;
         }
 
-        preLaunch(LauncherActivity.this, version);*/
+        preLaunch(LauncherActivity.this, version);
         PluginLoader.refreshAllPlugins(this);
         Renderers.reloadRenderers(this, version.getRenderer(), false);
         preLaunch(LauncherActivity.this, version);

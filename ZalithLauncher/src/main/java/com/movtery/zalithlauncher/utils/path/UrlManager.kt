@@ -13,17 +13,33 @@ import java.util.concurrent.TimeUnit
 
 class UrlManager {
     companion object {
-        private const val URL_USER_AGENT: String = "${InfoDistributor.LAUNCHER_NAME}/${BuildConfig.VERSION_NAME}"
+        private const val URL_USER_AGENT: String =
+            "${InfoDistributor.LAUNCHER_NAME}/${BuildConfig.VERSION_NAME}"
+
         @JvmField
         val TIME_OUT = Pair(8000, TimeUnit.MILLISECONDS)
-        const val URL_GITHUB_HOME: String = "https://api.github.com/repos/ZalithLauncher/Zalith-Info/contents/"
+
+        // Old contents API, keep this only if notice/sponsor still use it
+        const val URL_GITHUB_HOME: String =
+            "https://api.github.com/repos/ZalithLauncher/Zalith-Info/contents/"
+
+        // Your actual project page used by About screen
+        const val URL_HOME: String =
+            "https://github.com/DNAMobileApplications/ZalithLauncherTOWOReborn"
+
+        // Your GitHub Releases API used by the updater
+        const val URL_GITHUB_RELEASES: String =
+            "https://api.github.com/repos/DNAMobileApplications/ZalithLauncherTOWOReborn/releases"
+
         const val URL_MCMOD: String = "https://www.mcmod.cn/"
         const val URL_MINECRAFT: String = "https://www.minecraft.net/"
-        const val URL_MINECRAFT_VERSION_REPOS: String = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
+        const val URL_MINECRAFT_VERSION_REPOS: String =
+            "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
         const val URL_SUPPORT: String = "https://afdian.com/a/MovTery"
-        const val URL_HOME: String = "https://github.com/ZalithLauncher/ZalithLauncher"
-        const val URL_FCL_RENDERER_PLUGIN: String = "https://github.com/ShirosakiMio/FCLRendererPlugin/releases/tag/Renderer"
-        const val URL_FCL_DRIVER_PLUGIN: String = "https://github.com/FCL-Team/FCLDriverPlugin/releases/tag/Turnip"
+        const val URL_FCL_RENDERER_PLUGIN: String =
+            "https://github.com/ShirosakiMio/FCLRendererPlugin/releases/tag/Renderer"
+        const val URL_FCL_DRIVER_PLUGIN: String =
+            "https://github.com/FCL-Team/FCLDriverPlugin/releases/tag/Turnip"
 
         @JvmStatic
         fun createConnection(url: URL): URLConnection {
@@ -31,7 +47,6 @@ class UrlManager {
             connection.setRequestProperty("User-Agent", URL_USER_AGENT)
             connection.setConnectTimeout(TIME_OUT.first)
             connection.setReadTimeout(TIME_OUT.first)
-
             return connection
         }
 
@@ -48,17 +63,19 @@ class UrlManager {
 
         @JvmStatic
         fun createRequestBuilder(url: String, body: RequestBody?): Request.Builder {
-            val request = Request.Builder().url(url).header("User-Agent", URL_USER_AGENT)
-            body?.let{ request.post(it) }
+            val request = Request.Builder()
+                .url(url)
+                .header("User-Agent", URL_USER_AGENT)
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2022-11-28")
+
+            body?.let { request.post(it) }
             return request
         }
 
         @JvmStatic
         fun createOkHttpClient(): OkHttpClient = createOkHttpClientBuilder().build()
 
-        /**
-         * 创建一个OkHttpClient，可自定义一些内容
-         */
         @JvmStatic
         fun createOkHttpClientBuilder(action: (OkHttpClient.Builder) -> Unit = { }): OkHttpClient.Builder {
             return OkHttpClient.Builder()

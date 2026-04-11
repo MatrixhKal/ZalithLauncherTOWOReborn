@@ -380,7 +380,7 @@ object LaunchGame {
     }
 
     //OpenGL Check
-    private fun applyPreferredBackendIfNeeded(
+    /*private fun applyPreferredBackendIfNeeded(
         minecraftVersion: Version,
         gameDir: File
     ) {
@@ -441,5 +441,151 @@ object LaunchGame {
             .onFailure { e ->
                 Logger.appendToLog("GraphicsBackend: failed to patch options.txt to $backend: ${e.message}")
             }
+    }*/
+
+    private fun applyPreferredBackendIfNeeded(
+        minecraftVersion: Version,
+        gameDir: File
+    ) {
+        val versionName = minecraftVersion.getVersionName()
+        if (!is26_2OrNewer(versionName)) return
+
+        val wantsOpenGL = AllSettings.useOpenGLForMinecraft26.getValue()
+        val wantsSystemVulkan = AllSettings.zinkPreferSystemDriver.getValue()
+
+        val selectedRenderer = runCatching {
+            Renderers.getCurrentRenderer()
+        }.getOrNull()
+
+        val rendererName = selectedRenderer?.getRendererName().orEmpty()
+        val rendererId = selectedRenderer?.getRendererId().orEmpty()
+
+        when {
+            wantsOpenGL -> {
+                Logger.appendToLog("GraphicsBackend: user enabled OpenGL for $versionName")
+                patchOptionsGraphicsBackend(gameDir, GRAPHICS_BACKEND_OPENGL)
+            }
+
+            wantsSystemVulkan -> {
+                val vulkanDecision = evaluateNativeVulkanSafety(
+                    rendererId = rendererId,
+                    rendererName = rendererName
+                )
+
+                if (vulkanDecision.allowed) {
+                    Logger.appendToLog(
+                        "GraphicsBackend: System Vulkan allowed for $versionName " +
+                                "(renderer=$rendererName, reason=${vulkanDecision.reason})"
+                    )
+                    patchOptionsGraphicsBackend(gameDir, GRAPHICS_BACKEND_VULKAN)
+                } else {
+                    Logger.appendToLog(
+                        "GraphicsBackend: System Vulkan blocked for $versionName, " +
+                                "falling back to OpenGL (renderer=$rendererName, reason=${vulkanDecision.reason})"
+                    )
+                    patchOptionsGraphicsBackend(gameDir, GRAPHICS_BACKEND_OPENGL)
+                }
+            }
+
+            else -> {
+                Logger.appendToLog(
+                    "GraphicsBackend: no graphics API selected for $versionName, defaulting to OpenGL"
+                )
+                patchOptionsGraphicsBackend(gameDir, GRAPHICS_BACKEND_OPENGL)
+            }
+        }
     }
+
+    private data class VulkanDecision(
+        val allowed: Boolean,
+        val reason: String
+    )
+
+    private fun evaluateNativeVulkanSafety(
+        rendererId: String,
+        rendererName: String
+    ): VulkanDecision {
+        val normalizedId = rendererId.lowercase()
+        val normalizedName = rendererName.lowercase()
+
+        // MobileGlues/OpenGL renderer selected, but Minecraft backend forced to Vulkan.
+        if ("mobileglues" in normalizedId || "mobileglues" in normalizedName) {
+            return VulkanDecision(
+                allowed = false,
+                reason = "MobileGlues renderer selected; mixed OpenGL/Vulkan path is unsafe"
+            )
+        }
+
+        if ("opengl" in normalizedId || "opengl" in normalizedName || "gles" in normalizedName) {
+            return VulkanDecision(
+                allowed = false,
+                reason = "OpenGL/GLES renderer selected"
+            )
+        }
+
+        // Allow known Vulkan-style renderers only.
+        val looksLikeVulkanRenderer =
+            "vulkan" in normalizedId ||
+                    "vulkan" in normalizedName ||
+                    "zink" in normalizedId ||
+                    "zink" in normalizedName
+
+        if (!looksLikeVulkanRenderer) {
+            return VulkanDecision(
+                allowed = false,
+                reason = "selected renderer is not a Vulkan/Zink renderer"
+            )
+        }
+
+        // Device-level native Vulkan is still risky on Android for 26.2+.
+        return VulkanDecision(
+            allowed = true,
+            reason = "renderer looks Vulkan-capable"
+        )
+    }
+
+    private fun is26_2OrNewer(versionName: String): Boolean {
+        return Regex("""^26\.(2|[3-9]|\d{2,}).*""").matches(versionName)
+    }
+
+    private fun patchOptionsGraphicsBackend(gameDir: File, backend: String) {
+        require(backend == GRAPHICS_BACKEND_OPENGL || backend == GRAPHICS_BACKEND_VULKAN) {
+            "Unsupported graphics backend: $backend"
+        }
+
+        val optionsFile = File(gameDir, "options.txt")
+        val targetLine = """preferredGraphicsBackend:"$backend""""
+
+        Logger.appendToLog("GraphicsBackend: target options file = ${optionsFile.absolutePath}")
+
+        val original = if (optionsFile.exists()) {
+            runCatching { optionsFile.readText() }.getOrDefault("")
+        } else {
+            optionsFile.parentFile?.mkdirs()
+            ""
+        }
+
+        val updated = when {
+            Regex("""(?m)^preferredGraphicsBackend:.*$""").containsMatchIn(original) -> {
+                original.replace(
+                    Regex("""(?m)^preferredGraphicsBackend:.*$"""),
+                    targetLine
+                )
+            }
+            original.isBlank() -> targetLine + "\n"
+            original.endsWith("\n") -> original + targetLine + "\n"
+            else -> original + "\n" + targetLine + "\n"
+        }
+
+        runCatching { optionsFile.writeText(updated) }
+            .onSuccess {
+                Logger.appendToLog("GraphicsBackend: options.txt patched to $backend successfully")
+            }
+            .onFailure { e ->
+                Logger.appendToLog("GraphicsBackend: failed to patch options.txt to $backend: ${e.message}")
+            }
+    }
+
+    private const val GRAPHICS_BACKEND_OPENGL = "opengl"
+    private const val GRAPHICS_BACKEND_VULKAN = "vulkan"
 }

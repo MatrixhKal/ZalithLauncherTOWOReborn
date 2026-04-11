@@ -7,18 +7,35 @@ import com.google.gson.annotations.SerializedName;
 public class LauncherVersion {
     @SerializedName("version_code")
     private final int versionCode;
+
     @SerializedName("version_name")
     private final String versionName;
+
     private final WhatsNew title;
     private final WhatsNew description;
+
     @SerializedName("published_at")
     private final String publishedAt;
+
     @SerializedName("file_size")
     private final FileSize fileSize;
+
     @SerializedName("pre_release")
     private final boolean isPreRelease;
 
-    public LauncherVersion(int versionCode, String versionName, WhatsNew title, WhatsNew description, String publishedAt, FileSize fileSize, boolean isPreRelease) {
+    @SerializedName("download_url")
+    private final String downloadUrl;
+
+    public LauncherVersion(
+            int versionCode,
+            String versionName,
+            WhatsNew title,
+            WhatsNew description,
+            String publishedAt,
+            FileSize fileSize,
+            boolean isPreRelease,
+            String downloadUrl
+    ) {
         this.versionCode = versionCode;
         this.versionName = versionName;
         this.title = title;
@@ -26,6 +43,7 @@ public class LauncherVersion {
         this.publishedAt = publishedAt;
         this.fileSize = fileSize;
         this.isPreRelease = isPreRelease;
+        this.downloadUrl = downloadUrl;
     }
 
     public int getVersionCode() {
@@ -56,6 +74,10 @@ public class LauncherVersion {
         return isPreRelease;
     }
 
+    public String getDownloadUrl() {
+        return downloadUrl;
+    }
+
     @NonNull
     @Override
     public String toString() {
@@ -66,14 +88,18 @@ public class LauncherVersion {
                 ", description=" + description +
                 ", publishedAt='" + publishedAt + '\'' +
                 ", fileSize=" + fileSize +
+                ", isPreRelease=" + isPreRelease +
+                ", downloadUrl='" + downloadUrl + '\'' +
                 '}';
     }
 
     public static class WhatsNew {
         @SerializedName("en_us")
         private final String enUS;
+
         @SerializedName("zh_cn")
         private final String zhCN;
+
         @SerializedName("zh_tw")
         private final String zhTW;
 
