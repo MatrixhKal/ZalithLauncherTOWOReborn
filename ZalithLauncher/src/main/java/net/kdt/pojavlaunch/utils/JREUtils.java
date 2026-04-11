@@ -24,8 +24,8 @@ import com.movtery.zalithlauncher.feature.log.Logging;
 import com.movtery.zalithlauncher.feature.version.Version;
 import com.movtery.zalithlauncher.feature.version.VersionInfo;
 import com.movtery.zalithlauncher.plugins.driver.DriverPluginManager;
-import com.movtery.zalithlauncher.plugins.renderer.RendererPluginManager;
 import com.movtery.zalithlauncher.plugins.renderer.RendererPlugin;
+import com.movtery.zalithlauncher.plugins.renderer.RendererPluginManager;
 import com.movtery.zalithlauncher.renderer.RendererInterface;
 import com.movtery.zalithlauncher.renderer.Renderers;
 import com.movtery.zalithlauncher.setting.AllSettings;
@@ -48,6 +48,7 @@ import org.lwjgl.glfw.CallbackBridge;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -62,22 +63,28 @@ import javax.microedition.khronos.egl.EGLDisplay;
 public final class JREUtils {
     private static final boolean FORCE_PURE_HYBRID_TEST_MODE = false;
 
-    private JREUtils() {}
+    private static final int EGL_OPENGL_ES_BIT = 0x0001;
+    private static final int EGL_OPENGL_ES2_BIT = 0x0004;
+    private static final int EGL_OPENGL_ES3_BIT_KHR = 0x0040;
 
     public static String LD_LIBRARY_PATH;
     public static String jvmLibraryPath;
 
+    private JREUtils() {
+    }
+
     public static String findInLdLibPath(String libName) {
-        if (Os.getenv("LD_LIBRARY_PATH")==null) {
+        if (Os.getenv("LD_LIBRARY_PATH") == null) {
             try {
                 if (LD_LIBRARY_PATH != null) {
                     Os.setenv("LD_LIBRARY_PATH", LD_LIBRARY_PATH, true);
                 }
-            }catch (ErrnoException e) {
+            } catch (ErrnoException e) {
                 Logging.e("JREUtils", Tools.printToString(e));
             }
             return libName;
         }
+
         for (String libPath : Os.getenv("LD_LIBRARY_PATH").split(":")) {
             File f = new File(libPath, libName);
             if (f.exists() && f.isFile()) {
@@ -88,99 +95,131 @@ public final class JREUtils {
     }
 
     public static ArrayList<File> locateLibs(File path) {
-        ArrayList<File> returnValue = new ArrayList<>();
+        ArrayList<File> libs = new ArrayList<>();
         File[] list = path.listFiles();
-        if (list != null) {
-            for(File f : list) {
-                if (f.isFile() && f.getName().endsWith(".so")) {
-                    returnValue.add(f);
-                }else if (f.isDirectory()) {
-                    returnValue.addAll(locateLibs(f));
-                }
+        if (list == null) {
+            return libs;
+        }
+
+        for (File f : list) {
+            if (f.isFile() && f.getName().endsWith(".so")) {
+                libs.add(f);
+            } else if (f.isDirectory()) {
+                libs.addAll(locateLibs(f));
             }
         }
-        return returnValue;
+        return libs;
     }
 
     public static void initJavaRuntime(String jreHome) {
-        //dlopen("libSDL3.so");
-        //dlopen("libSDL2.so");
+        loadOptionalBootstrapLibraries();
+        loadRequiredJvmLibraries();
+        loadRemainingRuntimeLibraries(jreHome);
+    }
 
-        /*dlopen(DIR_NATIVE_LIB + "/libspirv-cross.so");
+    private static void loadOptionalBootstrapLibraries() {
+        dlopen(DIR_NATIVE_LIB + "/libSDL3.so");
+        dlopen(DIR_NATIVE_LIB + "/libSDL2.so");
+        dlopen(DIR_NATIVE_LIB + "/libspirv-cross.so");
         dlopen(DIR_NATIVE_LIB + "/libshaderc.so");
-        dlopen(DIR_NATIVE_LIB + "/liblwjgl_vma.so");*/
+        dlopen(DIR_NATIVE_LIB + "/liblwjgl_vma.so");
         dlopen("libzstd-jni_dh-1.5.7-6.so");
+    }
+
+    private static void loadRequiredJvmLibraries() {
         dlopen(findInLdLibPath("libjli.so"));
+
         if (!dlopen("libjvm.so")) {
-            Logging.w("DynamicLoader","Failed to load with no path, trying with full path");
-            dlopen(jvmLibraryPath+"/libjvm.so");
+            Logging.w("DynamicLoader", "Failed to load libjvm.so by name, trying full path");
+            dlopen(jvmLibraryPath + "/libjvm.so");
         }
+
         dlopen(findInLdLibPath("libverify.so"));
         dlopen(findInLdLibPath("libjava.so"));
-        // dlopen(findInLdLibPath("libjsig.so"));
         dlopen(findInLdLibPath("libnet.so"));
         dlopen(findInLdLibPath("libnio.so"));
         dlopen(findInLdLibPath("libawt.so"));
         dlopen(findInLdLibPath("libawt_headless.so"));
         dlopen(findInLdLibPath("libfreetype.so"));
         dlopen(findInLdLibPath("libfontmanager.so"));
+    }
+
+    private static void loadRemainingRuntimeLibraries(String jreHome) {
         for (File f : locateLibs(new File(jreHome, Tools.DIRNAME_HOME_JRE))) {
             dlopen(f.getAbsolutePath());
         }
     }
 
     public static void redirectAndPrintJRELog() {
+        Logging.v("jrelog", "Log starts here");
 
-        Logging.v("jrelog","Log starts here");
-        new Thread(new Runnable(){
-            int failTime = 0;
-            ProcessBuilder logcatPb;
-            @Override
-            public void run() {
+        Thread thread = new Thread(() -> {
+            ProcessBuilder logcatPb = new ProcessBuilder()
+                    .command("logcat", "-v", "brief", "-s", "jrelog:I", "LIBGL:I", "NativeInput")
+                    .redirectErrorStream(true);
+
+            int failCount = 0;
+
+            while (failCount <= 10) {
+                Process process = null;
+                InputStream inputStream = null;
+
                 try {
-                    if (logcatPb == null) {
-                        logcatPb = new ProcessBuilder().command("logcat", /* "-G", "1mb", */ "-v", "brief", "-s", "jrelog:I", "LIBGL:I", "NativeInput").redirectErrorStream(true);
-                    }
-
-                    Logging.i("jrelog-logcat","Clearing logcat");
+                    Logging.i("jrelog-logcat", "Clearing logcat");
                     new ProcessBuilder().command("logcat", "-c").redirectErrorStream(true).start();
-                    Logging.i("jrelog-logcat","Starting logcat");
-                    Process p = logcatPb.start();
+
+                    Logging.i("jrelog-logcat", "Starting logcat");
+                    process = logcatPb.start();
+                    inputStream = process.getInputStream();
 
                     byte[] buf = new byte[1024];
                     int len;
-                    while ((len = p.getInputStream().read(buf)) != -1) {
-                        String currStr = new String(buf, 0, len);
-                        Logger.appendToLog(currStr);
+                    while ((len = inputStream.read(buf)) != -1) {
+                        Logger.appendToLog(new String(buf, 0, len));
                     }
 
-                    if (p.waitFor() != 0) {
-                        Logging.e("jrelog-logcat", "Logcat exited with code " + p.exitValue());
-                        failTime++;
-                        Logging.i("jrelog-logcat", (failTime <= 10 ? "Restarting logcat" : "Too many restart fails") + " (attempt " + failTime + "/10");
-                        if (failTime <= 10) {
-                            run();
-                        } else {
-                            Logger.appendToLog("ERROR: Unable to get more Logging.");
-                        }
+                    int exitCode = process.waitFor();
+                    if (exitCode == 0) {
+                        break;
                     }
+
+                    failCount++;
+                    Logging.e("jrelog-logcat", "Logcat exited with code " + exitCode);
+                    Logging.i("jrelog-logcat", "Restarting logcat (attempt " + failCount + "/10)");
                 } catch (Throwable e) {
+                    failCount++;
                     Logging.e("jrelog-logcat", "Exception on logging thread", e);
                     Logger.appendToLog("Exception on logging thread:\n" + Log.getStackTraceString(e));
+                } finally {
+                    try {
+                        if (inputStream != null) {
+                            inputStream.close();
+                        }
+                    } catch (Throwable ignored) {
+                    }
+
+                    if (process != null) {
+                        process.destroy();
+                    }
                 }
             }
-        }).start();
-        Logging.i("jrelog-logcat","Logcat thread started");
 
+            if (failCount > 10) {
+                Logger.appendToLog("ERROR: Unable to get more Logging.");
+            }
+        }, "JRELogcatReader");
+
+        thread.start();
+        Logging.i("jrelog-logcat", "Logcat thread started");
     }
 
     public static void relocateLibPath(Runtime runtime, String jreHome) {
-        String JRE_ARCHITECTURE = runtime.arch;
-        if (Architecture.archAsInt(JRE_ARCHITECTURE) == ARCH_X86){
-            JRE_ARCHITECTURE = "i386/i486/i586";
+        String jreArchitecture = runtime.arch;
+        if (Architecture.archAsInt(jreArchitecture) == ARCH_X86) {
+            jreArchitecture = "i386/i486/i586";
         }
 
-        for (String arch : JRE_ARCHITECTURE.split("/")) {
+        for (String arch : jreArchitecture.split("/")) {
             File f = new File(jreHome, "lib/" + arch);
             if (f.exists() && f.isDirectory()) {
                 Tools.DIRNAME_HOME_JRE = "lib/" + arch;
@@ -189,24 +228,30 @@ public final class JREUtils {
 
         String libName = is64BitsDevice() ? "lib64" : "lib";
         StringBuilder ldLibraryPath = new StringBuilder();
+
         if (FFmpegPlugin.isAvailable) {
             ldLibraryPath.append(FFmpegPlugin.libraryPath).append(":");
         }
+
         RendererPlugin customRenderer = RendererPluginManager.getSelectedRendererPlugin();
         if (customRenderer != null) {
             ldLibraryPath.append(customRenderer.getPath()).append(":");
         }
+
         ldLibraryPath.append(jreHome)
                 .append("/").append(Tools.DIRNAME_HOME_JRE)
-                .append("/jli:").append(jreHome).append("/").append(Tools.DIRNAME_HOME_JRE)
-                .append(":");
-        ldLibraryPath.append("/system/").append(libName).append(":")
+                .append("/jli:")
+                .append(jreHome).append("/").append(Tools.DIRNAME_HOME_JRE)
+                .append(":")
+                .append("/system/").append(libName).append(":")
                 .append("/vendor/").append(libName).append(":")
                 .append("/vendor/").append(libName).append("/hw:");
+
         File runtimeModDir = PathManager.DIR_RUNTIME_MOD;
         if (runtimeModDir != null) {
             ldLibraryPath.append(runtimeModDir.getAbsolutePath()).append(":");
         }
+
         ldLibraryPath.append(DIR_NATIVE_LIB);
         LD_LIBRARY_PATH = ldLibraryPath.toString();
     }
@@ -214,8 +259,10 @@ public final class JREUtils {
     private static void initLdLibraryPath(String jreHome) {
         File serverFile = new File(jreHome + "/" + Tools.DIRNAME_HOME_JRE + "/server/libjvm.so");
         jvmLibraryPath = jreHome + "/" + Tools.DIRNAME_HOME_JRE + "/" + (serverFile.exists() ? "server" : "client");
-        Logging.d("DynamicLoader","Base LD_LIBRARY_PATH: " + LD_LIBRARY_PATH);
-        Logging.d("DynamicLoader","Internal LD_LIBRARY_PATH: "+jvmLibraryPath + ":" + LD_LIBRARY_PATH);
+
+        Logging.d("DynamicLoader", "Base LD_LIBRARY_PATH: " + LD_LIBRARY_PATH);
+        Logging.d("DynamicLoader", "Internal LD_LIBRARY_PATH: " + jvmLibraryPath + ":" + LD_LIBRARY_PATH);
+
         setLdLibraryPath(jvmLibraryPath + ":" + LD_LIBRARY_PATH);
     }
 
@@ -228,20 +275,30 @@ public final class JREUtils {
         envMap.put("LD_LIBRARY_PATH", LD_LIBRARY_PATH);
         envMap.put("PATH", jreHome + "/bin:" + Os.getenv("PATH"));
         envMap.put("FORCE_VSYNC", String.valueOf(AllSettings.getForceVsync().getValue()));
-        envMap.put("AWTSTUB_WIDTH", Integer.toString(CallbackBridge.windowWidth > 0 ? CallbackBridge.windowWidth : CallbackBridge.physicalWidth));
-        envMap.put("AWTSTUB_HEIGHT", Integer.toString(CallbackBridge.windowHeight > 0 ? CallbackBridge.windowHeight : CallbackBridge.physicalHeight));
-        envMap.put("MOD_ANDROID_RUNTIME", PathManager.DIR_RUNTIME_MOD != null ? PathManager.DIR_RUNTIME_MOD.getAbsolutePath() : "");
+        envMap.put("AWTSTUB_WIDTH", Integer.toString(
+                CallbackBridge.windowWidth > 0 ? CallbackBridge.windowWidth : CallbackBridge.physicalWidth
+        ));
+        envMap.put("AWTSTUB_HEIGHT", Integer.toString(
+                CallbackBridge.windowHeight > 0 ? CallbackBridge.windowHeight : CallbackBridge.physicalHeight
+        ));
+        envMap.put("MOD_ANDROID_RUNTIME",
+                PathManager.DIR_RUNTIME_MOD != null ? PathManager.DIR_RUNTIME_MOD.getAbsolutePath() : "");
 
-        if (AllSettings.getDumpShaders().getValue())
+        if (AllSettings.getDumpShaders().getValue()) {
             envMap.put("LIBGL_VGPU_DUMP", "1");
-        if (AllSettings.getZinkPreferSystemDriver().getValue())
+        }
+        if (AllSettings.getZinkPreferSystemDriver().getValue()) {
             envMap.put("POJAV_ZINK_PREFER_SYSTEM_DRIVER", "1");
-        if (AllSettings.getVsyncInZink().getValue())
+        }
+        if (AllSettings.getVsyncInZink().getValue()) {
             envMap.put("POJAV_VSYNC_IN_ZINK", "1");
-        if (AllSettings.getBigCoreAffinity().getValue())
+        }
+        if (AllSettings.getBigCoreAffinity().getValue()) {
             envMap.put("POJAV_BIG_CORE_AFFINITY", "1");
-        if (FFmpegPlugin.isAvailable)
+        }
+        if (FFmpegPlugin.isAvailable) {
             envMap.put("POJAV_FFMPEG_PATH", FFmpegPlugin.executablePath);
+        }
     }
 
     private static void setRendererEnv(Map<String, String> envMap) {
@@ -259,11 +316,15 @@ public final class JREUtils {
         envMap.putAll(currentRenderer.getRendererEnv().getValue());
 
         String eglName = currentRenderer.getRendererEGL();
-        if (eglName != null) envMap.put("POJAVEXEC_EGL", eglName);
+        if (eglName != null) {
+            envMap.put("POJAVEXEC_EGL", eglName);
+        }
 
         envMap.put("POJAV_RENDERER", rendererId);
 
-        if (RendererPluginManager.getSelectedRendererPlugin() != null) return;
+        if (RendererPluginManager.getSelectedRendererPlugin() != null) {
+            return;
+        }
 
         if (!rendererId.startsWith("opengles")) {
             envMap.put("MESA_LOADER_DRIVER_OVERRIDE", "zink");
@@ -276,16 +337,13 @@ public final class JREUtils {
 
         if (!envMap.containsKey("LIBGL_ES")) {
             int glesMajor = getDetectedVersion();
-            Logging.i("glesDetect","GLES version detected: "+glesMajor);
+            Logging.i("glesDetect", "GLES version detected: " + glesMajor);
 
             if (glesMajor < 3) {
-                //fallback to 2 since it's the minimum for the entire app
-                envMap.put("LIBGL_ES","2");
+                envMap.put("LIBGL_ES", "2");
             } else if (rendererId.startsWith("opengles")) {
                 envMap.put("LIBGL_ES", rendererId.replace("opengles", "").replace("_5", ""));
             } else {
-                // TODO if can: other backends such as Vulkan.
-                // Sure, they should provide GLES 3 support.
                 envMap.put("LIBGL_ES", "3");
             }
         }
@@ -293,38 +351,49 @@ public final class JREUtils {
 
     private static void setCustomEnv(Map<String, String> envMap) throws Throwable {
         File customEnvFile = new File(PathManager.DIR_GAME_HOME, "custom_env.txt");
-        if (customEnvFile.exists() && customEnvFile.isFile()) {
-            BufferedReader reader = new BufferedReader(new FileReader(customEnvFile));
+        if (!customEnvFile.exists() || !customEnvFile.isFile()) {
+            return;
+        }
+
+        BufferedReader reader = new BufferedReader(new FileReader(customEnvFile));
+        try {
             String line;
             while ((line = reader.readLine()) != null) {
-                int index = line.indexOf("=");
-                envMap.put(line.substring(0, index), line.substring(index + 1));
+                int index = line.indexOf('=');
+                if (index > 0) {
+                    envMap.put(line.substring(0, index), line.substring(index + 1));
+                }
             }
+        } finally {
             reader.close();
         }
     }
 
-    private static void checkAndUsedJSPH(Map<String, String> envMap, final Runtime runtime) {
-        boolean onUseJSPH = runtime.javaVersion > 11;
-        if (!onUseJSPH) return;
+    private static void configureJsphEnvIfNeeded(Map<String, String> envMap, Runtime runtime) {
+        if (runtime.javaVersion <= 11) {
+            return;
+        }
+
         File dir = new File(DIR_NATIVE_LIB);
-        if (!dir.isDirectory()) return;
+        if (!dir.isDirectory()) {
+            return;
+        }
+
         String jsphName = runtime.javaVersion == 17 ? "libjsph17" : "libjsph21";
         File[] files = dir.listFiles((dir1, name) -> name.startsWith(jsphName));
         if (files != null && files.length > 0) {
-            String libName = DIR_NATIVE_LIB + "/" + jsphName + ".so";
-            envMap.put("JSP", libName);
+            envMap.put("JSP", DIR_NATIVE_LIB + "/" + jsphName + ".so");
         }
     }
 
-    private static void setEnv(String jreHome, final Runtime runtime, Version gameVersion) throws Throwable {
+    private static void setEnv(String jreHome, Runtime runtime, Version gameVersion) throws Throwable {
         Map<String, String> envMap = new ArrayMap<>();
 
         setJavaEnv(envMap, jreHome);
         setCustomEnv(envMap);
 
         if (gameVersion != null) {
-            checkAndUsedJSPH(envMap, runtime);
+            configureJsphEnvIfNeeded(envMap, runtime);
 
             VersionInfo versionInfo = gameVersion.getVersionInfo();
             if (versionInfo != null && versionInfo.getLoaderInfo() != null) {
@@ -346,16 +415,18 @@ public final class JREUtils {
             Logger.appendToLog("Added custom env: " + env.getKey() + "=" + env.getValue());
             try {
                 Os.setenv(env.getKey(), env.getValue(), true);
-            }catch (NullPointerException exception){
+            } catch (NullPointerException exception) {
                 Logging.e("JREUtils", exception.toString());
             }
         }
     }
 
-    private static void initGraphicAndSoundEngine(boolean renderer) {
+    private static void initGraphicAndSoundEngine(boolean withRenderer) {
         dlopen(DIR_NATIVE_LIB + "/libopenal.so");
 
-        if (!renderer) return;
+        if (!withRenderer) {
+            return;
+        }
 
         String rendererLib = loadGraphicsLibrary();
         RendererPlugin customRenderer = RendererPluginManager.getSelectedRendererPlugin();
@@ -364,124 +435,135 @@ public final class JREUtils {
             customRenderer.getDlopen().forEach(lib -> dlopen(customRenderer.getPath() + "/" + lib));
         }
 
-        if (!dlopen(rendererLib) && !dlopen(findInLdLibPath(rendererLib))) {
+        if (rendererLib != null && !dlopen(rendererLib) && !dlopen(findInLdLibPath(rendererLib))) {
             Logging.e("RENDER_LIBRARY", "Failed to load renderer " + rendererLib);
         }
     }
 
-    private static void launchJavaVM(
-            final AppCompatActivity activity,
-            String runtimeHome,
-            Version gameVersion,
-            final List<String> JVMArgs,
-            final String userArgsString
-    ) {
-        List<String> userArgs = getJavaArgs(runtimeHome, userArgsString);
-        //Remove arguments that can interfere with the good working of the launcher
-
-        purgeArg(userArgs,"-Xms");
-        purgeArg(userArgs,"-Xmx");
-        purgeArg(userArgs,"-d32");
-        purgeArg(userArgs,"-d64");
+    private static void purgeUnsupportedUserArgs(List<String> userArgs) {
+        purgeArg(userArgs, "-Xms");
+        purgeArg(userArgs, "-Xmx");
+        purgeArg(userArgs, "-d32");
+        purgeArg(userArgs, "-d64");
         purgeArg(userArgs, "-Xint");
         purgeArg(userArgs, "-XX:+UseTransparentHugePages");
         purgeArg(userArgs, "-XX:+UseLargePagesInMetaspace");
         purgeArg(userArgs, "-XX:+UseLargePages");
         purgeArg(userArgs, "-Dorg.lwjgl.opengl.libname");
-        // Don't let the user specify a custom Freetype library (as the user is unlikely to specify a version compiled for Android)
         purgeArg(userArgs, "-Dorg.lwjgl.freetype.libname");
-        // Overridden by us to specify the exact number of cores that the android system has
         purgeArg(userArgs, "-XX:ActiveProcessorCount");
-
-        userArgs.add("-javaagent:" + LibPath.MIO_LIB_PATCHER.getAbsolutePath());
-
-        //Add automatically generated args
-        userArgs.add("-Xms" + AllSettings.getRamAllocation().getValue().getValue() + "M");
-        userArgs.add("-Xmx" + AllSettings.getRamAllocation().getValue().getValue() + "M");
-        if (Renderers.INSTANCE.isCurrentRendererValid()) userArgs.add("-Dorg.lwjgl.opengl.libname=" + loadGraphicsLibrary());
-
-        // In pure-hybrid test mode, do not pin LWJGL freetype to the APK jniLibs directory.
-        // Let the selected LWJGL component/native path decide it instead.
-        if (!FORCE_PURE_HYBRID_TEST_MODE) {
-            userArgs.add("-Dorg.lwjgl.freetype.libname="+ DIR_NATIVE_LIB +"/libfreetype.so");
-        }
-
-        // Some phones are not using the right number of cores, fix that
-        userArgs.add("-XX:ActiveProcessorCount=" + java.lang.Runtime.getRuntime().availableProcessors());
         purgeArg(userArgs, "-Djava.library.path");
         purgeArg(userArgs, "-Djna.boot.library.path");
         purgeArg(userArgs, "-Djna.tmpdir");
         purgeArg(userArgs, "-Dorg.lwjgl.librarypath");
         purgeArg(userArgs, "-Dorg.lwjgl.system.SharedLibraryExtractPath");
         purgeArg(userArgs, "-Dio.netty.native.workdir");
+    }
 
-        userArgs.addAll(JVMArgs);
+    private static void addLauncherManagedJvmArgs(List<String> userArgs) {
+        userArgs.add("-javaagent:" + LibPath.MIO_LIB_PATCHER.getAbsolutePath());
+        userArgs.add("-Xms" + AllSettings.getRamAllocation().getValue().getValue() + "M");
+        userArgs.add("-Xmx" + AllSettings.getRamAllocation().getValue().getValue() + "M");
 
-        if (FORCE_PURE_HYBRID_TEST_MODE) {
-            // Keep the hybrid-provided java.library.path/org.lwjgl.librarypath values,
-            // but force all writable temp/extract locations back into app cache.
-            purgeArg(userArgs, "-Djna.tmpdir");
-            purgeArg(userArgs, "-Dorg.lwjgl.system.SharedLibraryExtractPath");
-            purgeArg(userArgs, "-Dio.netty.native.workdir");
-            userArgs.add("-Djna.tmpdir=" + PathManager.DIR_CACHE.getAbsolutePath());
-            userArgs.add("-Dorg.lwjgl.system.SharedLibraryExtractPath=" + PathManager.DIR_CACHE.getAbsolutePath());
-            userArgs.add("-Dio.netty.native.workdir=" + PathManager.DIR_CACHE.getAbsolutePath());
+        if (Renderers.INSTANCE.isCurrentRendererValid()) {
+            userArgs.add("-Dorg.lwjgl.opengl.libname=" + loadGraphicsLibrary());
         }
 
-        activity.runOnUiThread(() -> Toast.makeText(activity, activity.getString(R.string.autoram_info_msg, AllSettings.getRamAllocation().getValue().getValue()), Toast.LENGTH_SHORT).show());
-        System.out.println(JVMArgs);
-        for (int i = 0; i < userArgs.size(); i++) {
-            String arg = userArgs.get(i);
-            if (arg.startsWith("--accessToken")) {
-                i += 1;
-            }
+        if (!FORCE_PURE_HYBRID_TEST_MODE) {
+            userArgs.add("-Dorg.lwjgl.freetype.libname=" + DIR_NATIVE_LIB + "/libfreetype.so");
+        }
+
+        userArgs.add("-XX:ActiveProcessorCount=" + java.lang.Runtime.getRuntime().availableProcessors());
+    }
+
+    private static void addPureHybridCacheOverrides(List<String> userArgs) {
+        if (!FORCE_PURE_HYBRID_TEST_MODE) {
+            return;
+        }
+
+        purgeArg(userArgs, "-Djna.tmpdir");
+        purgeArg(userArgs, "-Dorg.lwjgl.system.SharedLibraryExtractPath");
+        purgeArg(userArgs, "-Dio.netty.native.workdir");
+
+        userArgs.add("-Djna.tmpdir=" + PathManager.DIR_CACHE.getAbsolutePath());
+        userArgs.add("-Dorg.lwjgl.system.SharedLibraryExtractPath=" + PathManager.DIR_CACHE.getAbsolutePath());
+        userArgs.add("-Dio.netty.native.workdir=" + PathManager.DIR_CACHE.getAbsolutePath());
+    }
+
+    private static void logJvmArgs(List<String> args) {
+        for (int i = 0; i < args.size(); i++) {
+            String arg = args.get(i);
             Logger.appendToLog("JVMArg: " + arg);
+
+            if (arg.startsWith("--accessToken")) {
+                i++;
+            }
         }
+    }
+
+    private static void launchJavaVM(
+            AppCompatActivity activity,
+            String runtimeHome,
+            Version gameVersion,
+            List<String> jvmArgs,
+            String userArgsString
+    ) {
+        List<String> userArgs = getJavaArgs(runtimeHome, userArgsString);
+
+        purgeUnsupportedUserArgs(userArgs);
+        addLauncherManagedJvmArgs(userArgs);
+        userArgs.addAll(jvmArgs);
+        addPureHybridCacheOverrides(userArgs);
+
+        activity.runOnUiThread(() ->
+                Toast.makeText(
+                        activity,
+                        activity.getString(R.string.autoram_info_msg, AllSettings.getRamAllocation().getValue().getValue()),
+                        Toast.LENGTH_SHORT
+                ).show()
+        );
+
+        logJvmArgs(userArgs);
 
         setupExitMethod(activity.getApplication());
         initializeGameExitHook();
-        chdir(gameVersion == null ? ProfilePathHome.getGameHome() : gameVersion.getGameDir().getAbsolutePath());
-        userArgs.add(0,"java"); //argv[0] is the program name according to C standard.
 
-        final int exitCode = VMLauncher.launchJVM(userArgs.toArray(new String[0]));
+        chdir(gameVersion == null
+                ? ProfilePathHome.getGameHome()
+                : gameVersion.getGameDir().getAbsolutePath());
+
+        userArgs.add(0, "java");
+
+        int exitCode = VMLauncher.launchJVM(userArgs.toArray(new String[0]));
         Logger.appendToLog("Java Exit code: " + exitCode);
+
         if (exitCode != 0) {
             ErrorActivity.showExitMessage(activity, exitCode, false);
         }
+
         EventBus.getDefault().post(new JvmExitEvent(exitCode));
     }
 
     public static void launchWithUtils(
-            final AppCompatActivity activity,
-            final Runtime runtime,
+            AppCompatActivity activity,
+            Runtime runtime,
             Version gameVersion,
-            final List<String> JVMArgs,
-            final String userArgsString
+            List<String> jvmArgs,
+            String userArgsString
     ) throws Throwable {
         String runtimeHome = MultiRTUtils.getRuntimeHome(runtime.name).getAbsolutePath();
 
         relocateLibPath(runtime, runtimeHome);
-
         initLdLibraryPath(runtimeHome);
-
         setEnv(runtimeHome, runtime, gameVersion);
-
         initJavaRuntime(runtimeHome);
-
         initGraphicAndSoundEngine(gameVersion != null);
-
-        launchJavaVM(activity, runtimeHome, gameVersion, JVMArgs, userArgsString);
+        launchJavaVM(activity, runtimeHome, gameVersion, jvmArgs, userArgsString);
     }
 
-    /**
-     *  Gives an argument list filled with both the user args
-     *  and the auto-generated ones (eg. the window resolution).
-     * @return A list filled with args.
-     */
     public static List<String> getJavaArgs(String runtimeHome, String userArgumentsString) {
         List<String> userArguments = parseJavaArguments(userArgumentsString);
-        String resolvFile;
-        resolvFile = new File(PathManager.DIR_DATA,"resolv.conf").getAbsolutePath();
+        String resolvFile = new File(PathManager.DIR_DATA, "resolv.conf").getAbsolutePath();
 
         ArrayList<String> overridableArguments = new ArrayList<>(Arrays.asList(
                 "-Djava.home=" + runtimeHome,
@@ -494,135 +576,119 @@ public final class JREUtils {
                 "-Dpojav.path.minecraft=" + ProfilePathHome.getGameHome(),
                 "-Dpojav.path.private.account=" + PathManager.DIR_ACCOUNT_NEW,
                 "-Duser.timezone=" + TimeZone.getDefault().getID(),
-
-                //Debugging Vulkan
-                /*"-Dorg.lwjgl.vulkan.libname=libvulkan.so",
-                "-Dorg.lwjgl.util.Debug=true",
-                "-Dorg.lwjgl.util.DebugLoader=true",*/
-                // GLFW Stub width height
-                "-Dglfwstub.windowWidth=" + Tools.getDisplayFriendlyRes(currentDisplayMetrics.widthPixels, AllSettings.getResolutionRatio().getValue() / 100F),
-                "-Dglfwstub.windowHeight=" + Tools.getDisplayFriendlyRes(currentDisplayMetrics.heightPixels, AllSettings.getResolutionRatio().getValue() / 100F),
+                "-Dglfwstub.windowWidth=" + Tools.getDisplayFriendlyRes(
+                        currentDisplayMetrics.widthPixels,
+                        AllSettings.getResolutionRatio().getValue() / 100F
+                ),
+                "-Dglfwstub.windowHeight=" + Tools.getDisplayFriendlyRes(
+                        currentDisplayMetrics.heightPixels,
+                        AllSettings.getResolutionRatio().getValue() / 100F
+                ),
                 "-Dglfwstub.initEgl=false",
-                "-Dext.net.resolvPath=" +resolvFile,
-                "-Dlog4j2.formatMsgNoLookups=true", //Log4j RCE mitigation
-
+                "-Dext.net.resolvPath=" + resolvFile,
+                "-Dlog4j2.formatMsgNoLookups=true",
                 "-Dnet.minecraft.clientmodname=" + InfoDistributor.LAUNCHER_NAME,
-                "-Dfml.earlyprogresswindow=false", //Forge 1.14+ workaround
+                "-Dfml.earlyprogresswindow=false",
                 "-Dloader.disable_forked_guis=true",
-                "-Djdk.lang.Process.launchMechanism=FORK", // Default is POSIX_SPAWN which requires starting jspawnhelper, which doesn't work on Android
+                "-Djdk.lang.Process.launchMechanism=FORK",
                 "-Dsodium.checks.issue2561=false"
         ));
 
         List<String> additionalArguments = new ArrayList<>();
         for (String arg : overridableArguments) {
-            String strippedArg = arg.substring(0,arg.indexOf('='));
+            String strippedArg = arg.substring(0, arg.indexOf('='));
             boolean add = true;
+
             for (String uarg : userArguments) {
                 if (uarg.startsWith(strippedArg)) {
                     add = false;
                     break;
                 }
             }
-            if (add)
+
+            if (add) {
                 additionalArguments.add(arg);
-            else
-                Logging.i("ArgProcessor","Arg skipped: "+arg);
+            } else {
+                Logging.i("ArgProcessor", "Arg skipped: " + arg);
+            }
         }
 
-        //Add all the arguments
         userArguments.addAll(additionalArguments);
         return userArguments;
     }
 
-    /**
-     * Parse and separate java arguments in a user friendly fashion
-     * It supports multi line and absence of spaces between arguments
-     * The function also supports auto-removal of improper arguments, although it may miss some.
-     *
-     * @param args The un-parsed argument list.
-     * @return Parsed args as an ArrayList
-     */
-    public static ArrayList<String> parseJavaArguments(String args){
+    public static ArrayList<String> parseJavaArguments(String args) {
         ArrayList<String> parsedArguments = new ArrayList<>(0);
         args = args.trim().replace(" ", "");
-        //For each prefixes, we separate args.
-        String[] separators = new String[]{"-XX:-","-XX:+", "-XX:","--", "-D", "-X", "-javaagent:", "-verbose"};
-        for (String prefix : separators){
+
+        String[] separators = new String[]{"-XX:-", "-XX:+", "-XX:", "--", "-D", "-X", "-javaagent:", "-verbose"};
+        for (String prefix : separators) {
             while (true) {
                 int start = args.indexOf(prefix);
-                if (start == -1) break;
-                //Get the end of the current argument by checking the nearest separator
+                if (start == -1) {
+                    break;
+                }
+
                 int end = -1;
-                for (String separator: separators) {
+                for (String separator : separators) {
                     int tempEnd = args.indexOf(separator, start + prefix.length());
-                    if (tempEnd == -1) continue;
-                    if (end == -1) {
-                        end = tempEnd;
+                    if (tempEnd == -1) {
                         continue;
                     }
-                    end = Math.min(end, tempEnd);
+                    if (end == -1) {
+                        end = tempEnd;
+                    } else {
+                        end = Math.min(end, tempEnd);
+                    }
                 }
-                //Fallback
-                if (end == -1) end = args.length();
 
-                //Extract it
+                if (end == -1) {
+                    end = args.length();
+                }
+
                 String parsedSubString = args.substring(start, end);
                 args = args.replace(parsedSubString, "");
 
-                //Check if two args aren't bundled together by mistake
                 if (parsedSubString.indexOf('=') == parsedSubString.lastIndexOf('=')) {
                     int arraySize = parsedArguments.size();
                     if (arraySize > 0) {
                         String lastString = parsedArguments.get(arraySize - 1);
-                        // Looking for list elements
-                        if (lastString.charAt(lastString.length() - 1) == ',' ||
-                                parsedSubString.contains(",")) {
+                        if (lastString.charAt(lastString.length() - 1) == ',' || parsedSubString.contains(",")) {
                             parsedArguments.set(arraySize - 1, lastString + parsedSubString);
                             continue;
                         }
                     }
                     parsedArguments.add(parsedSubString);
+                } else {
+                    Logging.w("JAVA ARGS PARSER", "Removed improper arguments: " + parsedSubString);
                 }
-                else Logging.w("JAVA ARGS PARSER", "Removed improper arguments: " + parsedSubString);
             }
         }
+
         return parsedArguments;
     }
 
-    /**
-     * Open the render library in accordance to the settings.
-     * It will fallback if it fails to load the library.
-     * @return The name of the loaded library
-     */
     public static String loadGraphicsLibrary() {
-        if (!Renderers.INSTANCE.isCurrentRendererValid()) return null;
-        else {
-            RendererPlugin rendererPlugin = RendererPluginManager.getSelectedRendererPlugin();
-            if (rendererPlugin != null) {
-                return rendererPlugin.getPath() + "/" + rendererPlugin.getGlName();
-            } else {
-                return Renderers.INSTANCE.getCurrentRenderer().getRendererLibrary();
-            }
+        if (!Renderers.INSTANCE.isCurrentRendererValid()) {
+            return null;
         }
+
+        RendererPlugin rendererPlugin = RendererPluginManager.getSelectedRendererPlugin();
+        if (rendererPlugin != null) {
+            return rendererPlugin.getPath() + "/" + rendererPlugin.getGlName();
+        }
+
+        return Renderers.INSTANCE.getCurrentRenderer().getRendererLibrary();
     }
 
-    /**
-     * Remove the argument from the list, if it exists
-     * If the argument exists multiple times, they will all be removed.
-     * @param argList The argument list to purge
-     * @param argStart The argument to purge from the list.
-     */
     private static void purgeArg(List<String> argList, String argStart) {
         argList.removeIf(arg -> arg.startsWith(argStart));
     }
-    private static final int EGL_OPENGL_ES_BIT = 0x0001;
-    private static final int EGL_OPENGL_ES2_BIT = 0x0004;
-    private static final int EGL_OPENGL_ES3_BIT_KHR = 0x0040;
+
     @SuppressWarnings("SameParameterValue")
     private static boolean hasExtension(String extensions, String name) {
         int start = extensions.indexOf(name);
         while (start >= 0) {
-            // check that we didn't find a prefix of a longer extension name
             int end = start + name.length();
             if (end == extensions.length() || extensions.charAt(end) == ' ') {
                 return true;
@@ -633,62 +699,60 @@ public final class JREUtils {
     }
 
     public static int getDetectedVersion() {
-        /*
-         * Get all the device configurations and check the EGL_RENDERABLE_TYPE attribute
-         * to determine the highest ES version supported by any config. The
-         * EGL_KHR_create_context extension is required to check for ES3 support; if the
-         * extension is not present this test will fail to detect ES3 support. This
-         * effectively makes the extension mandatory for ES3-capable devices.
-         */
         EGL10 egl = (EGL10) EGLContext.getEGL();
         EGLDisplay display = egl.eglGetDisplay(EGL10.EGL_DEFAULT_DISPLAY);
         int[] numConfigs = new int[1];
-        if (egl.eglInitialize(display, null)) {
-            try {
-                boolean checkES3 = hasExtension(egl.eglQueryString(display, EGL10.EGL_EXTENSIONS),
-                        "EGL_KHR_create_context");
-                if (egl.eglGetConfigs(display, null, 0, numConfigs)) {
-                    EGLConfig[] configs = new EGLConfig[numConfigs[0]];
-                    if (egl.eglGetConfigs(display, configs, numConfigs[0], numConfigs)) {
-                        int highestEsVersion = 0;
-                        int[] value = new int[1];
-                        for (int i = 0; i < numConfigs[0]; i++) {
-                            if (egl.eglGetConfigAttrib(display, configs[i],
-                                    EGL10.EGL_RENDERABLE_TYPE, value)) {
-                                if (checkES3 && ((value[0] & EGL_OPENGL_ES3_BIT_KHR) ==
-                                        EGL_OPENGL_ES3_BIT_KHR)) {
-                                    if (highestEsVersion < 3) highestEsVersion = 3;
-                                } else if ((value[0] & EGL_OPENGL_ES2_BIT) == EGL_OPENGL_ES2_BIT) {
-                                    if (highestEsVersion < 2) highestEsVersion = 2;
-                                } else if ((value[0] & EGL_OPENGL_ES_BIT) == EGL_OPENGL_ES_BIT) {
-                                    if (highestEsVersion < 1) highestEsVersion = 1;
-                                }
-                            } else {
-                                Logging.w("glesDetect", "Getting config attribute with "
-                                        + "EGL10#eglGetConfigAttrib failed "
-                                        + "(" + i + "/" + numConfigs[0] + "): "
-                                        + egl.eglGetError());
-                            }
-                        }
-                        return highestEsVersion;
-                    } else {
-                        Logging.e("glesDetect", "Getting configs with EGL10#eglGetConfigs failed: "
-                                + egl.eglGetError());
-                        return -1;
-                    }
-                } else {
-                    Logging.e("glesDetect", "Getting number of configs with EGL10#eglGetConfigs failed: "
-                            + egl.eglGetError());
-                    return -2;
-                }
-            } finally {
-                egl.eglTerminate(display);
-            }
-        } else {
+
+        if (!egl.eglInitialize(display, null)) {
             Logging.e("glesDetect", "Couldn't initialize EGL.");
             return -3;
         }
+
+        try {
+            boolean checkES3 = hasExtension(
+                    egl.eglQueryString(display, EGL10.EGL_EXTENSIONS),
+                    "EGL_KHR_create_context"
+            );
+
+            if (!egl.eglGetConfigs(display, null, 0, numConfigs)) {
+                Logging.e("glesDetect", "Getting number of configs with EGL10#eglGetConfigs failed: " + egl.eglGetError());
+                return -2;
+            }
+
+            EGLConfig[] configs = new EGLConfig[numConfigs[0]];
+            if (!egl.eglGetConfigs(display, configs, numConfigs[0], numConfigs)) {
+                Logging.e("glesDetect", "Getting configs with EGL10#eglGetConfigs failed: " + egl.eglGetError());
+                return -1;
+            }
+
+            int highestEsVersion = 0;
+            int[] value = new int[1];
+
+            for (int i = 0; i < numConfigs[0]; i++) {
+                if (!egl.eglGetConfigAttrib(display, configs[i], EGL10.EGL_RENDERABLE_TYPE, value)) {
+                    Logging.w(
+                            "glesDetect",
+                            "Getting config attribute with EGL10#eglGetConfigAttrib failed (" +
+                                    i + "/" + numConfigs[0] + "): " + egl.eglGetError()
+                    );
+                    continue;
+                }
+
+                if (checkES3 && ((value[0] & EGL_OPENGL_ES3_BIT_KHR) == EGL_OPENGL_ES3_BIT_KHR)) {
+                    highestEsVersion = Math.max(highestEsVersion, 3);
+                } else if ((value[0] & EGL_OPENGL_ES2_BIT) == EGL_OPENGL_ES2_BIT) {
+                    highestEsVersion = Math.max(highestEsVersion, 2);
+                } else if ((value[0] & EGL_OPENGL_ES_BIT) == EGL_OPENGL_ES_BIT) {
+                    highestEsVersion = Math.max(highestEsVersion, 1);
+                }
+            }
+
+            return highestEsVersion;
+        } finally {
+            egl.eglTerminate(display);
+        }
     }
+
     public static native int chdir(String path);
     public static native boolean dlopen(String libPath);
     public static native void setLdLibraryPath(String ldLibraryPath);
@@ -696,8 +760,8 @@ public final class JREUtils {
     public static native void releaseBridgeWindow();
     public static native void initializeGameExitHook();
     public static native void setupExitMethod(Context context);
-    // Obtain AWT screen pixels to render on Android SurfaceView
-    public static native int[] renderAWTScreenFrame(/* Object canvas, int width, int height */);
+    public static native int[] renderAWTScreenFrame();
+
     static {
         System.loadLibrary("exithook");
         System.loadLibrary("pojavexec");

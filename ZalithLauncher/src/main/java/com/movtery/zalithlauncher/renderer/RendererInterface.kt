@@ -1,41 +1,25 @@
 package com.movtery.zalithlauncher.renderer
 
-/**
- * 启动器渲染器实现
- */
+// Launcher renderer implementations DNA Mobile
 interface RendererInterface {
-    /**
-     * 获取渲染器的ID
-     */
+    /** Internal renderer ID used by the launcher. */
     fun getRendererId(): String
 
-    /**
-     * 获取渲染器的唯一标识ID
-     */
+    /** Unique renderer identifier. */
     fun getUniqueIdentifier(): String
 
-    /**
-     * 获取渲染器的名称
-     */
+    /** User-facing renderer name. */
     fun getRendererName(): String
 
-    /**
-     * 获取渲染器的环境变量
-     */
+    /** Environment variables required by this renderer. */
     fun getRendererEnv(): Lazy<Map<String, String>>
 
-    /**
-     * 获取需要dlopen的库
-     */
+    /** Native libraries that should be loaded with dlopen before use. */
     fun getDlopenLibrary(): Lazy<List<String>>
 
-    /**
-     * 获取渲染器的库
-     */
+    /** Main native library name or path for this renderer. */
     fun getRendererLibrary(): String
 
-    /**
-     * 获取EGL名称
-     */
+    /** EGL library name for this renderer, if required. */
     fun getRendererEGL(): String? = null
 }

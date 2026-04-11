@@ -34,7 +34,6 @@ public abstract class BaseActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-
         LocaleHelper.Companion.setLocale(this);
         Tools.setFullscreen(this);
         Tools.updateWindowSize(this);
@@ -51,9 +50,7 @@ public abstract class BaseActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
-
         ContextExecutor.setActivity(this);
-
         if (!Tools.checkStorageRoot()) {
             startActivity(new Intent(this, MissingStorageActivity.class));
             finish();
@@ -99,10 +96,7 @@ public abstract class BaseActivity extends AppCompatActivity {
     public void event(LauncherIgnoreNotchEvent event) {
         Tools.ignoreNotch(shouldIgnoreNotch(), this);
     }
-
-    /**
-     * @return whether the notch should be ignored
-     */
+    // Ignore NOTCH on phones that have this feature
     public boolean shouldIgnoreNotch() {
         return AllSettings.getIgnoreNotchLauncher().getValue();
     }

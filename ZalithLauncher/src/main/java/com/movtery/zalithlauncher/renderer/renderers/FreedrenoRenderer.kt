@@ -2,6 +2,7 @@ package com.movtery.zalithlauncher.renderer.renderers
 
 import com.movtery.zalithlauncher.renderer.RendererInterface
 
+// Renderers DNA Mobile
 class FreedrenoRenderer : RendererInterface {
     override fun getRendererId(): String = "gallium_freedreno"
 

@@ -8,6 +8,8 @@ import static org.lwjgl.glfw.CallbackBridge.windowWidth;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.ActivityManager;
+import android.app.Application;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.ComponentName;
@@ -59,7 +61,6 @@ import com.movtery.zalithlauncher.task.TaskExecutors;
 import com.movtery.zalithlauncher.ui.activity.BaseActivity;
 import com.movtery.zalithlauncher.ui.dialog.KeyboardDialog;
 import com.movtery.zalithlauncher.ui.subassembly.menu.ControlMenu;
-import com.movtery.zalithlauncher.ui.subassembly.menu.MenuUtils;
 import com.movtery.zalithlauncher.ui.subassembly.view.GameMenuViewWrapper;
 import com.movtery.zalithlauncher.utils.ZHTools;
 import com.movtery.zalithlauncher.utils.anim.AnimUtils;
@@ -93,18 +94,21 @@ public class MainActivity extends BaseActivity implements
         ServiceConnection,
         ViewTreeObserver.OnGlobalLayoutListener {
 
-    public static volatile ClipboardManager GLOBAL_CLIPBOARD;
     public static final String INTENT_VERSION = "intent_version";
 
+    public static volatile ClipboardManager GLOBAL_CLIPBOARD;
     public static volatile boolean isInputStackCall;
+    public static TouchCharInput touchCharInput;
+
     protected static View.OnGenericMotionListener motionListener = (v, event) -> false;
 
     @SuppressLint("StaticFieldLeak")
     private static MainActivity sInstance;
 
-    private ActivityGameBinding binding;
-    public static TouchCharInput touchCharInput;
+    private final AtomicBoolean launchRequested = new AtomicBoolean(false);
+    private final AnimPlayer inputPreviewAnim = new AnimPlayer();
 
+    private ActivityGameBinding binding;
     private GameMenuViewWrapper gameMenuWrapper;
     private GyroControl gyroControl;
     private KeyboardDialog keyboardDialog;
@@ -118,41 +122,49 @@ public class MainActivity extends BaseActivity implements
     private boolean isKeyboardVisible;
     private boolean isGameServiceBound;
     private boolean isJvmExiting;
-    private final AtomicBoolean launchRequested = new AtomicBoolean(false);
 
     private SimpleTextWatcher inputWatcher;
-    private final AnimPlayer inputPreviewAnim = new AnimPlayer();
 
     @Override
-    public void onCreate(Bundle savedInstanceState) {
+    protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         sInstance = this;
 
         initSdlIfNeeded();
+        resolveVersion();
+        configureVersionSettings();
+        startAndBindGameService();
 
+        initLayout();
+        initWindow();
+        initControlMenu();
+
+        inputWatcher = s -> binding.inputPreview.setText(s.toString().trim());
+        getWindow().getDecorView().getViewTreeObserver().addOnGlobalLayoutListener(this);
+    }
+
+    private void resolveVersion() {
         minecraftVersion = getIntent().getParcelableExtra(INTENT_VERSION);
         if (minecraftVersion == null) {
             throw new IllegalStateException("The game version is not selected.");
         }
+    }
 
+    private void configureVersionSettings() {
         MCOptions.INSTANCE.setup(this, () -> minecraftVersion);
+
         if (AllSettings.getAutoSetGameLanguage().getValue()) {
             ProfileLanguageSelector.setGameLanguage(
                     minecraftVersion,
                     AllSettings.getGameLanguageOverridden().getValue()
             );
         }
+    }
 
-        Intent gameServiceIntent = new Intent(this, GameService.class);
-        ContextCompat.startForegroundService(this, gameServiceIntent);
-
-        initLayout();
-        initWindow();
-        initControlMenu();
-        bindToGameService(gameServiceIntent);
-
-        inputWatcher = s -> binding.inputPreview.setText(s.toString().trim());
-        getWindow().getDecorView().getViewTreeObserver().addOnGlobalLayoutListener(this);
+    private void startAndBindGameService() {
+        Intent serviceIntent = new Intent(this, GameService.class);
+        ContextCompat.startForegroundService(this, serviceIntent);
+        bindService(serviceIntent, this, 0);
     }
 
     private void initSdlIfNeeded() {
@@ -178,7 +190,7 @@ public class MainActivity extends BaseActivity implements
                 Tools.SDL.initializeControllerSubsystems();
             }
         } catch (UnsatisfiedLinkError ignored) {
-            // Ignore this because SDL.setupJNI() only works when the native SDL libs were loaded.
+            // Native SDL libs were not loaded.
         } catch (ReflectiveOperationException e) {
             Tools.showErrorRemote("SDL did not load properly.", e);
         }
@@ -186,19 +198,11 @@ public class MainActivity extends BaseActivity implements
 
     private void initWindow() {
         Window window = getWindow();
-
-        if (AllSettings.getAlternateSurface().getValue()) {
-            window.setBackgroundDrawable(null);
-        } else {
-            window.setBackgroundDrawable(new ColorDrawable(Color.BLACK));
-        }
-
+        window.setBackgroundDrawable(
+                AllSettings.getAlternateSurface().getValue() ? null : new ColorDrawable(Color.BLACK)
+        );
         window.setSustainedPerformanceMode(AllSettings.getSustainedPerformance().getValue());
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-    }
-
-    private void bindToGameService(Intent gameServiceIntent) {
-        bindService(gameServiceIntent, this, 0);
     }
 
     protected void initLayout() {
@@ -207,9 +211,10 @@ public class MainActivity extends BaseActivity implements
 
         gameMenuWrapper = new GameMenuViewWrapper(this, v -> onClickedMenu(), true);
         touchCharInput = binding.mainTouchCharInput;
+        keyboardDialog = new KeyboardDialog(this).setShowSpecialButtons(false);
+        gyroControl = new GyroControl(this);
 
         BackgroundManager.setBackgroundImage(this, BackgroundType.IN_GAME, binding.backgroundView, null);
-        keyboardDialog = new KeyboardDialog(this).setShowSpecialButtons(false);
 
         binding.mainControlLayout.setMenuListener(this);
         binding.mainDrawerOptions.setScrimColor(Color.TRANSPARENT);
@@ -217,8 +222,6 @@ public class MainActivity extends BaseActivity implements
 
         CallbackBridge.addGrabListener(binding.mainTouchpad);
         CallbackBridge.addGrabListener(binding.mainGameRenderView);
-
-        gyroControl = new GyroControl(this);
 
         try {
             initGameEnvironment();
@@ -272,6 +275,7 @@ public class MainActivity extends BaseActivity implements
                 if (AllSettings.getVirtualMouseStart().getValue()) {
                     binding.mainTouchpad.post(() -> binding.mainTouchpad.switchState());
                 }
+
                 LaunchGame.runGame(this, minecraftVersion, versionInfo);
                 Logging.i("MainActivity", "LaunchGame.runGame returned");
                 GameService.setActive(false);
@@ -333,7 +337,6 @@ public class MainActivity extends BaseActivity implements
         controlSettingsBinding = ViewControlMenuBinding.inflate(getLayoutInflater());
         new ControlMenu(this, this, controlSettingsBinding, controlLayout, false);
         controlSettingsBinding.saveAndExport.setVisibility(View.GONE);
-
         binding.mainControlLayout.setModifiable(false);
 
         gameMenuSettingsController = new GameMenuSettingsController(
@@ -386,11 +389,13 @@ public class MainActivity extends BaseActivity implements
     }
 
     @Override
-    public void onResume() {
+    protected void onResume() {
         super.onResume();
+
         if (AllStaticSettings.enableGyro) {
             gyroControl.enable();
         }
+
         CallbackBridge.nativeSetWindowAttrib(LwjglGlfwKeycode.GLFW_FOCUSED, 1);
         CallbackBridge.nativeSetWindowAttrib(LwjglGlfwKeycode.GLFW_HOVERED, 1);
     }
@@ -402,73 +407,12 @@ public class MainActivity extends BaseActivity implements
         if (!isJvmExiting && GameService.isActive() && CallbackBridge.isGrabbing()) {
             sendKeyPress(LwjglGlfwKeycode.GLFW_KEY_ESCAPE);
         }
+
         CallbackBridge.nativeSetWindowAttrib(LwjglGlfwKeycode.GLFW_FOCUSED, 0);
         CallbackBridge.nativeSetWindowAttrib(LwjglGlfwKeycode.GLFW_HOVERED, 0);
         super.onPause();
     }
-    /*@Subscribe(threadMode = ThreadMode.MAIN)
-    public void onJvmExit(JvmExitEvent event) {
-        Logging.i("MainActivity", "JvmExitEvent received, exitCode=" + event.getExitCode());
 
-        isJvmExiting = true;
-        launchRequested.set(false);
-        LaunchGame.resetLaunchState();
-
-        try {
-            CallbackBridge.nativeSetWindowAttrib(LwjglGlfwKeycode.GLFW_FOCUSED, 0);
-            CallbackBridge.nativeSetWindowAttrib(LwjglGlfwKeycode.GLFW_HOVERED, 0);
-            CallbackBridge.nativeSetWindowAttrib(LwjglGlfwKeycode.GLFW_VISIBLE, 0);
-        } catch (Throwable ignored) {
-        }
-
-        if (binding != null) {
-            try {
-                if (binding.mainGameRenderView != null) {
-                    binding.mainGameRenderView.setSurfaceReadyListener(null);
-                    binding.mainGameRenderView.setOnRenderingStartedListener(null);
-                }
-
-                CallbackBridge.removeGrabListener(binding.mainTouchpad);
-                CallbackBridge.removeGrabListener(binding.mainGameRenderView);
-
-                if (binding.mainDrawerOptions != null) {
-                    binding.mainDrawerOptions.closeDrawers();
-                }
-            } catch (Throwable t) {
-                Logging.w("MainActivity", "Failed to clean UI/render state on JVM exit", t);
-            }
-        }
-
-        if (isGameServiceBound) {
-            try {
-                unbindService(this);
-            } catch (IllegalArgumentException ignored) {
-            }
-            isGameServiceBound = false;
-        }
-
-        GameService.setActive(false);
-        stopService(new Intent(this, GameService.class));
-
-        // Only auto-close on a clean successful exit.
-        if (event.getExitCode() == 0) {
-            if (!isFinishing()) {
-                finish();
-            }
-        }
-
-        TaskExecutors.getUIHandler().postDelayed(() -> {
-            try {
-                String processName = android.app.Application.getProcessName();
-                if (processName != null && processName.endsWith(":game")) {
-                    Logging.i("MainActivity", "JvmExitEvent: killing stale :game process");
-                    android.os.Process.killProcess(android.os.Process.myPid());
-                }
-            } catch (Throwable t) {
-                Logging.w("MainActivity", "Failed to kill :game process after JVM exit", t);
-            }
-        }, 300);
-    }*/
     @Subscribe(threadMode = ThreadMode.MAIN)
     public void onJvmExit(JvmExitEvent event) {
         Logging.i("MainActivity", "JvmExitEvent received, exitCode=" + event.getExitCode());
@@ -477,31 +421,69 @@ public class MainActivity extends BaseActivity implements
         launchRequested.set(false);
         LaunchGame.resetLaunchState();
 
+        clearWindowAttribs();
+        cleanupRenderUiState();
+        cleanupGameService();
+
+        // Clean exit only:
+        // finish the activity and force-kill the stale :game process
+        // so 26.2+ can relaunch cleanly after Quit Game.
+        if (event.getExitCode() == 0) {
+            runOnUiThread(() -> {
+                if (!isFinishing()) {
+                    finish();
+                }
+            });
+
+            TaskExecutors.getUIHandler().postDelayed(() -> {
+                try {
+                    String processName = getCurrentProcessNameCompat();
+                    if (processName != null && processName.endsWith(":game")) {
+                        Logging.i("MainActivity", "JvmExitEvent: force killing :game process after clean exit");
+                        ZHTools.killProcess();
+                    }
+                } catch (Throwable t) {
+                    Logging.w("MainActivity", "Failed to force kill :game process after clean exit", t);
+                }
+            }, 150);
+        }
+
+        // Non-zero exit:
+        // leave the activity alive so the crash/error screen can remain visible.
+    }
+
+    private void clearWindowAttribs() {
         try {
             CallbackBridge.nativeSetWindowAttrib(LwjglGlfwKeycode.GLFW_FOCUSED, 0);
             CallbackBridge.nativeSetWindowAttrib(LwjglGlfwKeycode.GLFW_HOVERED, 0);
             CallbackBridge.nativeSetWindowAttrib(LwjglGlfwKeycode.GLFW_VISIBLE, 0);
         } catch (Throwable ignored) {
         }
+    }
 
-        if (binding != null) {
-            try {
-                if (binding.mainGameRenderView != null) {
-                    binding.mainGameRenderView.setSurfaceReadyListener(null);
-                    binding.mainGameRenderView.setOnRenderingStartedListener(null);
-                }
-
-                CallbackBridge.removeGrabListener(binding.mainTouchpad);
-                CallbackBridge.removeGrabListener(binding.mainGameRenderView);
-
-                if (binding.mainDrawerOptions != null) {
-                    binding.mainDrawerOptions.closeDrawers();
-                }
-            } catch (Throwable t) {
-                Logging.w("MainActivity", "Failed to clean UI/render state on JVM exit", t);
-            }
+    private void cleanupRenderUiState() {
+        if (binding == null) {
+            return;
         }
 
+        try {
+            if (binding.mainGameRenderView != null) {
+                binding.mainGameRenderView.setSurfaceReadyListener(null);
+                binding.mainGameRenderView.setOnRenderingStartedListener(null);
+            }
+
+            CallbackBridge.removeGrabListener(binding.mainTouchpad);
+            CallbackBridge.removeGrabListener(binding.mainGameRenderView);
+
+            if (binding.mainDrawerOptions != null) {
+                binding.mainDrawerOptions.closeDrawers();
+            }
+        } catch (Throwable t) {
+            Logging.w("MainActivity", "Failed to clean UI/render state", t);
+        }
+    }
+
+    private void cleanupGameService() {
         if (isGameServiceBound) {
             try {
                 unbindService(this);
@@ -512,28 +494,29 @@ public class MainActivity extends BaseActivity implements
 
         GameService.setActive(false);
         stopService(new Intent(this, GameService.class));
+    }
 
-        // Clean quit: close and kill stale :game process so 26.2 relaunch works.
-        if (event.getExitCode() == 0) {
-            if (!isFinishing()) {
-                finish();
-            }
-
-            TaskExecutors.getUIHandler().postDelayed(() -> {
-                try {
-                    String processName = android.app.Application.getProcessName();
-                    if (processName != null && processName.endsWith(":game")) {
-                        Logging.i("MainActivity", "JvmExitEvent: killing stale :game process after clean exit");
-                        android.os.Process.killProcess(android.os.Process.myPid());
-                    }
-                } catch (Throwable t) {
-                    Logging.w("MainActivity", "Failed to kill :game process after clean exit", t);
-                }
-            }, 300);
+    private String getCurrentProcessNameCompat() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            return Application.getProcessName();
         }
 
-        // Non-zero exit: do not finish and do not kill.
-        // Let ErrorActivity / crash UI remain visible.
+        try {
+            int pid = android.os.Process.myPid();
+            ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+
+            if (am != null) {
+                for (ActivityManager.RunningAppProcessInfo proc : am.getRunningAppProcesses()) {
+                    if (proc != null && proc.pid == pid) {
+                        return proc.processName;
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            Logging.w("MainActivity", "Failed to resolve current process name", t);
+        }
+
+        return getPackageName();
     }
 
     @Override
@@ -563,26 +546,8 @@ public class MainActivity extends BaseActivity implements
             gameMenuSettingsController.closeSpinner();
         }
 
-        if (isGameServiceBound) {
-            try {
-                unbindService(this);
-            } catch (IllegalArgumentException ignored) {
-            }
-            isGameServiceBound = false;
-        }
-
-        if (binding != null) {
-            try {
-                if (binding.mainGameRenderView != null) {
-                    binding.mainGameRenderView.setSurfaceReadyListener(null);
-                    binding.mainGameRenderView.setOnRenderingStartedListener(null);
-                }
-            } catch (Throwable ignored) {
-            }
-
-            CallbackBridge.removeGrabListener(binding.mainTouchpad);
-            CallbackBridge.removeGrabListener(binding.mainGameRenderView);
-        }
+        cleanupGameService();
+        cleanupRenderUiState();
 
         getWindow().getDecorView().getViewTreeObserver().removeOnGlobalLayoutListener(this);
         ContextExecutor.clearActivity();
@@ -660,130 +625,6 @@ public class MainActivity extends BaseActivity implements
                 .start();
     }
 
-    public static void toggleMouse(Context context) {
-        MainActivity activity = sInstance;
-        if (activity == null || CallbackBridge.isGrabbing() || activity.binding == null) {
-            return;
-        }
-
-        Toast.makeText(
-                context,
-                activity.binding.mainTouchpad.switchState()
-                        ? R.string.control_mouseon
-                        : R.string.control_mouseoff,
-                Toast.LENGTH_SHORT
-        ).show();
-    }
-
-    @Override
-    public boolean dispatchKeyEvent(KeyEvent event) {
-        if (isInEditor) {
-            if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
-                if (event.getAction() == KeyEvent.ACTION_DOWN) {
-                    binding.mainControlLayout.askToExit(this);
-                }
-                return true;
-            }
-            return super.dispatchKeyEvent(event);
-        }
-
-        boolean handled = binding.mainGameRenderView.processKeyEvent(event);
-        if (!handled && event.getKeyCode() == KeyEvent.KEYCODE_BACK && !binding.mainTouchCharInput.isEnabled()) {
-            if (event.getAction() != KeyEvent.ACTION_UP) {
-                return true;
-            }
-            sendKeyPress(LwjglGlfwKeycode.GLFW_KEY_ESCAPE);
-            return true;
-        }
-
-        return handled;
-    }
-
-    public static void switchKeyboardState() {
-        MainActivity activity = sInstance;
-        if (activity != null && activity.binding != null) {
-            activity.binding.mainTouchCharInput.switchKeyboardState();
-        }
-    }
-
-    private static void setUri(Context context, String input) {
-        if (input.startsWith("file:")) {
-            int truncLength = input.startsWith("file://") ? 7 : 5;
-            input = input.substring(truncLength);
-            Logging.i("MainActivity", input);
-
-            File inputFile = new File(input);
-            FileTools.shareFile(context, inputFile);
-            Logging.i("In-game Share File/Folder", "Start!");
-            return;
-        }
-
-        ZHTools.openLink(context, input, "*/*");
-    }
-
-    public static void openLink(String link) {
-        MainActivity activity = sInstance;
-        if (activity == null || activity.binding == null) {
-            return;
-        }
-
-        Context context = activity.binding.mainTouchpad.getContext();
-        ((Activity) context).runOnUiThread(() -> {
-            try {
-                setUri(context, link);
-            } catch (Throwable th) {
-                Tools.showError(context, th);
-            }
-        });
-    }
-
-    public static void querySystemClipboard() {
-        TaskExecutors.runInUIThread(() -> {
-            if (GLOBAL_CLIPBOARD == null) {
-                AWTInputBridge.nativeClipboardReceived(null, null);
-                return;
-            }
-
-            ClipData clipData = GLOBAL_CLIPBOARD.getPrimaryClip();
-            if (clipData == null || clipData.getItemCount() == 0) {
-                AWTInputBridge.nativeClipboardReceived(null, null);
-                return;
-            }
-
-            CharSequence clipItemText = clipData.getItemAt(0).getText();
-            if (clipItemText == null) {
-                AWTInputBridge.nativeClipboardReceived(null, null);
-                return;
-            }
-
-            AWTInputBridge.nativeClipboardReceived(clipItemText.toString(), "plain");
-        });
-    }
-
-    public static void putClipboardData(String data, String mimeType) {
-        TaskExecutors.runInUIThread(() -> {
-            if (GLOBAL_CLIPBOARD == null) {
-                return;
-            }
-
-            ClipData clipData = null;
-            switch (mimeType) {
-                case "text/plain":
-                    clipData = ClipData.newPlainText("AWT Paste", data);
-                    break;
-                case "text/html":
-                    clipData = ClipData.newHtmlText("AWT Paste", data, data);
-                    break;
-                default:
-                    break;
-            }
-
-            if (clipData != null) {
-                GLOBAL_CLIPBOARD.setPrimaryClip(clipData);
-            }
-        });
-    }
-
     @Override
     public void onClickedMenu() {
         DrawerLayout drawerLayout = binding.mainDrawerOptions;
@@ -827,18 +668,144 @@ public class MainActivity extends BaseActivity implements
         isGameServiceBound = false;
     }
 
-    private boolean checkCaptureDispatchConditions(MotionEvent event) {
-        int eventSource = event.getSource();
-        return (eventSource & InputDevice.SOURCE_MOUSE_RELATIVE) != 0
-                || (eventSource & InputDevice.SOURCE_MOUSE) != 0;
+    private boolean isCapturedPointerEvent(MotionEvent event) {
+        int source = event.getSource();
+        return (source & InputDevice.SOURCE_MOUSE_RELATIVE) != 0
+                || (source & InputDevice.SOURCE_MOUSE) != 0;
     }
 
     @Override
     public boolean dispatchTrackballEvent(MotionEvent event) {
-        if (checkCaptureDispatchConditions(event)) {
+        if (isCapturedPointerEvent(event)) {
             return binding.mainGameRenderView.dispatchCapturedPointerEvent(event);
         }
         return super.dispatchTrackballEvent(event);
+    }
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (isInEditor) {
+            if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
+                if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                    binding.mainControlLayout.askToExit(this);
+                }
+                return true;
+            }
+            return super.dispatchKeyEvent(event);
+        }
+
+        boolean handled = binding.mainGameRenderView.processKeyEvent(event);
+        if (!handled
+                && event.getKeyCode() == KeyEvent.KEYCODE_BACK
+                && !binding.mainTouchCharInput.isEnabled()) {
+            if (event.getAction() != KeyEvent.ACTION_UP) {
+                return true;
+            }
+            sendKeyPress(LwjglGlfwKeycode.GLFW_KEY_ESCAPE);
+            return true;
+        }
+
+        return handled;
+    }
+
+    public static void toggleMouse(Context context) {
+        MainActivity activity = sInstance;
+        if (activity == null || activity.binding == null || CallbackBridge.isGrabbing()) {
+            return;
+        }
+
+        Toast.makeText(
+                context,
+                activity.binding.mainTouchpad.switchState()
+                        ? R.string.control_mouseon
+                        : R.string.control_mouseoff,
+                Toast.LENGTH_SHORT
+        ).show();
+    }
+
+    public static void switchKeyboardState() {
+        MainActivity activity = sInstance;
+        if (activity != null && activity.binding != null) {
+            activity.binding.mainTouchCharInput.switchKeyboardState();
+        }
+    }
+
+    public static void openLink(String link) {
+        MainActivity activity = sInstance;
+        if (activity == null || activity.binding == null) {
+            return;
+        }
+
+        Context context = activity.binding.mainTouchpad.getContext();
+        ((Activity) context).runOnUiThread(() -> {
+            try {
+                openUriOrShareFile(context, link);
+            } catch (Throwable th) {
+                Tools.showError(context, th);
+            }
+        });
+    }
+
+    private static void openUriOrShareFile(Context context, String input) {
+        if (input.startsWith("file:")) {
+            int truncLength = input.startsWith("file://") ? 7 : 5;
+            input = input.substring(truncLength);
+            Logging.i("MainActivity", input);
+
+            File inputFile = new File(input);
+            FileTools.shareFile(context, inputFile);
+            Logging.i("In-game Share File/Folder", "Start!");
+            return;
+        }
+
+        ZHTools.openLink(context, input, "*/*");
+    }
+
+    public static void querySystemClipboard() {
+        TaskExecutors.runInUIThread(() -> {
+            if (GLOBAL_CLIPBOARD == null) {
+                AWTInputBridge.nativeClipboardReceived(null, null);
+                return;
+            }
+
+            ClipData clipData = GLOBAL_CLIPBOARD.getPrimaryClip();
+            if (clipData == null || clipData.getItemCount() == 0) {
+                AWTInputBridge.nativeClipboardReceived(null, null);
+                return;
+            }
+
+            CharSequence text = clipData.getItemAt(0).getText();
+            if (text == null) {
+                AWTInputBridge.nativeClipboardReceived(null, null);
+                return;
+            }
+
+            AWTInputBridge.nativeClipboardReceived(text.toString(), "plain");
+        });
+    }
+
+    public static void putClipboardData(String data, String mimeType) {
+        TaskExecutors.runInUIThread(() -> {
+            if (GLOBAL_CLIPBOARD == null) {
+                return;
+            }
+
+            ClipData clipData = null;
+            switch (mimeType) {
+                case "text/plain":
+                    clipData = ClipData.newPlainText("AWT Paste", data);
+                    break;
+                case "text/html":
+                    clipData = ClipData.newHtmlText("AWT Paste", data, data);
+                    break;
+                default:
+                    break;
+            }
+
+            if (clipData != null) {
+                GLOBAL_CLIPBOARD.setPrimaryClip(clipData);
+            }
+        });
     }
 
     public ActivityGameBinding getBinding() {

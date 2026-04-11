@@ -17,6 +17,8 @@ class UnpackComponentsTask(val context: Context, val component: Components) : Ab
     private lateinit var input: InputStream
     private var isCheckFailed: Boolean = false
 
+    // This class unpacks the components inside the assets folder
+
     init {
         runCatching {
             am = context.assets
