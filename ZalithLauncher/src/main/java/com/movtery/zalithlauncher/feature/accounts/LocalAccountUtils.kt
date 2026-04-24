@@ -12,11 +12,7 @@ class LocalAccountUtils {
     companion object {
         @JvmStatic
         fun checkUsageAllowed(listener: CheckResultListener) {
-            if (AccountsManager.hasMicrosoftAccount()) {
-                listener.onUsageAllowed()
-            } else {
-                listener.onUsageDenied()
-            }
+            listener.onUsageAllowed()
         }
 
         @JvmStatic
